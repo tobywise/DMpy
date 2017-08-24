@@ -35,7 +35,7 @@ If we now fit our model to this data, we can see whether the alpha parameter is 
 
 .. code-block:: python
 
-        >>> model_rw.fit_MAP(oo, sim_rw, hierarchical=False)
+        >>> model_rw.fit_MAP(outcomes, sim_rw)
         Loading data
         Loading multi-subject data with 450 subjects
         Loaded data, 450 subjects with 120 trials
@@ -69,3 +69,20 @@ Additionally, the fitting method produced two figures: a scatter plot showing th
 
 .. image:: rw_pr2.png
         :align: center
+
+To illustrate this more clearly, let's look at an example of a more complex model for which parameters aren't recovered so accurately...
+
+.. code-block:: python
+
+        >>> model_1lr.fit_MAP(outcomes, complex_model)
+
+        Finished model fitting in 61.4955701763 seconds
+
+.. image:: complex_pr1.png
+        :align: center
+
+.. image:: complex_pr2.png
+        :align: center
+
+We can see from the plots that it doesn't look good. The a parameter is estimated successfully, as shown by the scatter plot and a correlation of .96 between the true and estimated values in the correlation matrix. However, the other two parameters show poor correlations between true and estimated values, indicating that we're not able to recover them successfully.
+
