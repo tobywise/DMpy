@@ -5,6 +5,24 @@ Simulation is an important step to check that models produce expected patterns o
 
 To facilitate this process, the ``RLModel`` class has a ``simulate`` method, that provides the ability to simulate behaviour for a given model across parameter values, and produces outputs necessary to evaluate the simulated behaviour.
 
+At a basic level, the ``simulate`` method can be called with a series of outcomes (e.g. reward/no reward for a given stimulus) as a .txt file or a numpy array, along with dictionaries of parameter values for the learning and observation models. For example:
+
+.. code-block:: python
+
+        model.simulate(outcomes, learning_parameters={'value': 0.5, 'alpha':0.3},
+                       observation_parameters={'b':3})
+
+This will simulate behaviour according to the model's responses to the given outcomes at the provided parameter values. By "behaviour" here we refer to the probability of choosing a given action. The ``simulate`` method will also produce plots of the simulated probability, along with any other variables provided by the learning and observation models (such as prediction errors or any other values returned by the model functions).
+
+It can be useful to save the output of a simulation run to a file in the same format as real subjects' data, and it is possible to do this by providing a value for the ``response_file`` argument of the ``simulate`` method. This will simulate choices on each trial based on the calculated probability of choosing a given action, and write these to a response file, along with subject IDs (subjects are named after the model parameters used to simulate them) and columns listing the provided parameter values for the simulation.
+
+.. code-block:: python
+
+        model.simulate(outcomes, learning_parameters={'value': 0.5, 'alpha':0.3},
+                       observation_parameters={'b':3}, response_file='sinulated_data.csv')
+
+It is also possible to simulate multiple subjects by providing a value for the ``n_subjects`` argument of the ``simulate`` method. This will generate additional sets of randomly determined choice data for each subject.
+
 
 Parameter recovery
 """"""""""""""""""

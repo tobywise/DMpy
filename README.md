@@ -1,6 +1,6 @@
-# PYdm
+# DMpy
 
-PYdm is a package for developing and fitting computational models of behaviour in decision making tasks.
+DMpy is a package for developing and fitting computational models of behaviour in decision making tasks.
 
 Its aim is to be transparent and modular, allowing simple coding of both learning and observation models, along with
 straightforward model fitting.

@@ -21,8 +21,7 @@ from DMpy.utils import generate_pymc_distribution, n_returns, function_wrapper, 
 sns.set_style("white")
 sns.set_palette("Set1")
 
-# TODO rewrite fitting methods so there's a single .fit() method - can then use kwargs like seaborn (e.g. line kwargs)
-# TODO to pass args to underlying fitting functions
+# TODO parameter recovery doesn't work with hierarchical estimates as there is a different parameter for each subject
 
 # TODO different priors/simulation parameter values for each subject
 # TODO bayes optimal
@@ -91,6 +90,54 @@ def _initialise_parameters(learning_parameters, observation_parameters, n_subjec
                     observation_parameters[n] = i
 
     return dynamic_parameters, static_parameters, observation_parameters
+
+
+def _recovery(parameter_table, sims):
+    
+    sns.set_palette("deep")
+    sims = sims.reset_index(drop=True)
+    fit_params = [i for i in parameter_table.columns if not 'sd_' in i and not 'Subject' in i]
+    parameter_table = pd.merge(parameter_table, sims, on='Subject')
+    print "Performing parameter recovery tests..."
+    p_values = []
+    p_values_sim = []
+    n_p_free = len(fit_params)
+    print n_p_free
+    f, axarr = plt.subplots(1, n_p_free, figsize=(3 * n_p_free, 3.5))
+    for n, p in enumerate(fit_params):  # this code could all be made far more efficient
+        print n
+        if p.replace('mean_', '') + '_sim' not in sims.columns:
+            raise ValueError("Simulated values for parameter {0} not found in response file".format(p))
+        p_values.append(parameter_table[p])
+        p_values_sim.append(parameter_table[p.replace('mean_', '') + '_sim'])
+        if n_p_free > 1:
+            ax = axarr[n]
+        else:
+            ax = axarr
+        sns.regplot(parameter_table[p.replace('mean_', '') + '_sim'], parameter_table[p], ax=ax)
+        ax.set_xlabel('Simulated {0}'.format(p), fontweight='bold')
+        ax.set_ylabel('Estimated {0}'.format(p), fontweight='bold')
+        ax.set_title('Parameter {0}'.format(p), fontweight='bold')
+        
+        sim_min = np.min(parameter_table[p.replace('mean_', '') + '_sim'])
+        sim_max = np.max(parameter_table[p.replace('mean_', '') + '_sim'])
+        true_min = np.min(parameter_table[p])
+        true_max = np.max(parameter_table[p])
+        ax.set_xlim([sim_min - np.abs(sim_min)/10., sim_max + np.abs(sim_max)/10.])
+        ax.set_ylim([true_min - np.abs(true_min)/10., true_max + np.abs(true_max)/10.])
+        
+        sns.despine()
+    plt.tight_layout()
+    cor = np.corrcoef(p_values, p_values_sim)[n_p_free:, :n_p_free]
+    fig, ax = plt.subplots(figsize=(n_p_free * 2, n_p_free * 1.8))
+    cmap = sns.diverging_palette(220, 10, as_cmap=True)
+    sns.heatmap(cor, cmap=cmap, square=True, linewidths=.5, xticklabels=fit_params,
+                yticklabels=fit_params, annot=True)  # order might not work here
+    ax.set_xlabel('Simulated', fontweight='bold')
+    ax.set_ylabel('True', fontweight='bold')
+
+    return cor
+    
 
 
 class PyMCModel(Continuous):
@@ -302,7 +349,7 @@ class RLModel():
             self._fit_MAP(outcomes=outcomes, responses=responses, plot=True, recovery=recovery, **fit_kwargs)
 
         elif fit_method in ['variational', 'Variational']:
-            self._fit_variational(outcomes=outcomes, responses=responses, plot=plot, hierarchical=hierarchical,
+            self._fit_variational(outcomes=outcomes, responses=responses, plot=plot, hierarchical=hierarchical, recovery=recovery,
                                   fit_stats=fit_stats, fit_kwargs=fit_kwargs, sample_kwargs=sample_kwargs)
 
         elif fit_method in ['MCMC', 'mcmc']:
@@ -320,7 +367,7 @@ class RLModel():
 
         print "Loading data"
 
-        self.subjects, responses = load_data(responses)
+        self.subjects, responses, sims = load_data(responses)
         n_subjects = len(self.subjects)
 
         outcomes = load_outcomes(outcomes)
@@ -364,6 +411,9 @@ class RLModel():
         self.parameter_table = parameter_table(pm.df_summary(self.trace), self.subjects)
         print self.parameter_table
 
+        if recovery and sims is not None:
+            self.recovery_correlations = _recovery(self.parameter_table, sims)
+
         # these seem to take a lot of time...
         if fit_stats:
             print "Calculating DIC..."
@@ -379,14 +429,14 @@ class RLModel():
         print "Finished model fitting in {0} seconds".format(end - start)
 
 
-    def _fit_variational(self, outcomes, responses, plot=True, hierarchical=True, fit_stats=False, fit_kwargs=None,
-                         sample_kwargs=None):
+    def _fit_variational(self, outcomes, responses, plot=True, hierarchical=True, fit_stats=False, recovery=True,
+                         fit_kwargs=None, sample_kwargs=None):
 
         sns.set_palette("deep")
 
         print "Loading data"
 
-        self.subjects, responses = load_data(responses)
+        self.subjects, responses, sims = load_data(responses)
         # responses = responses.T
         n_subjects = len(self.subjects)
 
@@ -445,6 +495,11 @@ class RLModel():
 
         self.parameter_table = parameter_table(pm.df_summary(self.trace), self.subjects)
         print self.parameter_table
+
+        print recovery
+
+        if recovery and sims is not None:
+            self.recovery_correlations = _recovery(self.parameter_table, sims)
 
         if fit_stats:
             # these seem to take a lot of time...
@@ -540,39 +595,7 @@ class RLModel():
             self.parameter_table.columns = ['Subject'] + self.fit_values.keys()
 
         if recovery and sims is not None:
-            sns.set_palette("deep")
-            sims = sims.reset_index(drop=True)
-            self.parameter_table = pd.concat([self.parameter_table, sims], axis=1)
-            print "Performing parameter recovery tests..."
-            p_values = []
-            p_values_sim = []
-            n_p_free = len(self.fit_values.keys())
-            f, axarr = plt.subplots(1, n_p_free, figsize=(3 * n_p_free, 3.5))
-            for n, p in enumerate(self.fit_values.keys()):
-                print n
-                if p + '_sim' not in sims.columns:
-                    raise ValueError("Simulated values for parameter {0} not found in response file".format(p))
-                p_values.append(self.parameter_table[p])
-                p_values_sim.append(self.parameter_table[p + '_sim'])
-                if n_p_free > 1:
-                    ax = axarr[n]
-                else:
-                    ax = axarr
-                sns.regplot(self.parameter_table[p + '_sim'], self.parameter_table[p], ax=ax)
-                ax.set_xlabel('Simulated {0}'.format(p), fontweight='bold')
-                ax.set_ylabel('Estimated {0}'.format(p), fontweight='bold')
-                ax.set_title('Parameter {0}'.format(p), fontweight='bold')
-                sns.despine()
-            plt.tight_layout()
-            cor = np.corrcoef(p_values, p_values_sim)[n_p_free:, :n_p_free]
-            fig, ax = plt.subplots(figsize=(n_p_free * 2, n_p_free * 1.8))
-            cmap = sns.diverging_palette(220, 10, as_cmap=True)
-            sns.heatmap(cor, cmap=cmap, square=True, linewidths=.5, xticklabels=self.fit_values.keys(),
-                        yticklabels=self.fit_values.keys(), annot=True)
-            ax.set_xlabel('Simulated', fontweight='bold')
-            ax.set_ylabel('True', fontweight='bold')
-
-            self.recovery_correlations = cor
+            self.recovery_correlations = _recovery(self.parameter_table, sims)
 
         print self.parameter_table
 
@@ -875,7 +898,8 @@ class RLModel():
 
 class Parameter():
 
-    def __init__(self, name, distribution, lower_bound=None, upper_bound=None, mean=1., variance=None, dynamic=False):
+    def __init__(self, name, distribution, lower_bound=None, upper_bound=None, mean=1., variance=None, dynamic=False,
+                 **kwargs):
 
         if distribution == 'uniform' and (lower_bound == None or upper_bound == None):
             raise ValueError("Must specify upper and lower bounds for parameters with uniform distribution")
@@ -890,6 +914,7 @@ class Parameter():
         self.dynamic = dynamic
         self.lower_bound = lower_bound
         self.upper_bound = upper_bound
+        self.__pymc_kwargs = kwargs
 
         if lower_bound:
             self.lower_bound = lower_bound
@@ -900,6 +925,7 @@ class Parameter():
         self.variance = variance
 
         self.transform_method = None
+
 
     def transform(self, name, transform):
 

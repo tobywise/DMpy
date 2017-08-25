@@ -23,6 +23,11 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
     Turns parameters into pymc3 parameter distributions for model fitting
     """
 
+    if hasattr(p, '__pymc_kwargs'):
+        kwargs = p.__pymc_kwargs
+    else:
+        kwargs = {}
+
     if mle and (p.distribution != 'uniform' and p.distribution != 'flat' and p.distribution != 'fixed'):
 
         if p.upper_bound is not None and p.lower_bound is not None:
@@ -50,11 +55,11 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
                 p.pymc_distribution = BoundedNormal(p.name,
                                                     mu=BoundedNormal(p.name + '_group_mu', mu=p.mean, sd=p.variance),
                                                     sd=Uniform(p.name + '_group_sd', lower=0, upper=100),  # TODO need to allow adjustment of these values somehow
-                                                    shape=n_subjects)
+                                                    shape=n_subjects, **kwargs)
             elif n_subjects > 1:
-                p.pymc_distribution = BoundedNormal(p.name, mu=p.mean, sd=p.variance, shape=n_subjects)
+                p.pymc_distribution = BoundedNormal(p.name, mu=p.mean, sd=p.variance, shape=n_subjects, **kwargs)
             else:  # is this necessary?
-                p.pymc_distribution = BoundedNormal(p.name, mu=p.mean, sd=p.variance)
+                p.pymc_distribution = BoundedNormal(p.name, mu=p.mean, sd=p.variance, **kwargs)
             p.backward, p.forward = get_transforms(p)
 
         elif p.distribution == 'normal' and p.lower_bound is not None:
@@ -63,11 +68,11 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
                 p.pymc_distribution = BoundedNormal(p.name,
                                                     mu=BoundedNormal(p.name  + '_group_mu', mu=p.mean, sd=p.variance),
                                                     sd=Uniform(p.name  + '_group_sd', lower=0, upper=100),
-                                                    shape=n_subjects)
+                                                    shape=n_subjects, **kwargs)
             elif n_subjects > 1:
-                p.pymc_distribution = BoundedNormal(p.name, mu=p.mean, sd=p.variance, shape=n_subjects)
+                p.pymc_distribution = BoundedNormal(p.name, mu=p.mean, sd=p.variance, shape=n_subjects, **kwargs)
             else:
-                p.pymc_distribution = BoundedNormal(p.name, mu=p.mean, sd=p.variance)
+                p.pymc_distribution = BoundedNormal(p.name, mu=p.mean, sd=p.variance, **kwargs)
             p.backward, p.forward = get_transforms(p)
 
         elif p.distribution == 'normal':
@@ -75,34 +80,34 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
                 p.pymc_distribution = Normal(p.name,
                                              mu=Normal(p.name  + '_group_mu', mu=p.mean, sd=p.variance),
                                              sd=Uniform(p.name + '_group_sd', lower=0, upper=100),
-                                             shape=n_subjects, transform=p.transform_method)
+                                             shape=n_subjects, transform=p.transform_method, **kwargs)
             elif n_subjects > 1:
                 p.pymc_distribution = Normal(p.name, mu=p.mean, sd=p.variance, shape=n_subjects,
-                                             transform=p.transform_method)
+                                             transform=p.transform_method, **kwargs)
             else:
-                p.pymc_distribution = Normal(p.name, mu=p.mean, sd=p.variance, transform=p.transform_method)
+                p.pymc_distribution = Normal(p.name, mu=p.mean, sd=p.variance, transform=p.transform_method, **kwargs)
             if hasattr(p.pymc_distribution, "transformation"):
                 p.backward, p.forward = get_transforms(p)
 
         elif p.distribution == 'uniform':
             if hierarchical:
                 p.pymc_distribution = Uniform(p.name, lower=p.lower_bound, upper=p.upper_bound,
-                                             shape=n_subjects)
+                                             shape=n_subjects, **kwargs)
             elif n_subjects > 1:
                 p.pymc_distribution = Uniform(p.name, lower=p.lower_bound, upper=p.upper_bound,
-                                             shape=n_subjects)
+                                             shape=n_subjects, **kwargs)
             else:
-                p.pymc_distribution = Uniform(p.name, lower=p.lower_bound, upper=p.upper_bound)
+                p.pymc_distribution = Uniform(p.name, lower=p.lower_bound, upper=p.upper_bound, **kwargs)
             if hasattr(p.pymc_distribution, "transformation"):
                 p.backward, p.forward = get_transforms(p)
 
         elif p.distribution == 'flat':
             if hierarchical:
-                p.pymc_distribution = Flat(p.name, shape=n_subjects, transform=p.transform_method)
+                p.pymc_distribution = Flat(p.name, shape=n_subjects, transform=p.transform_method, **kwargs)
             elif n_subjects > 1:
-                p.pymc_distribution = Flat(p.name, shape=n_subjects, transform=p.transform_method)
+                p.pymc_distribution = Flat(p.name, shape=n_subjects, transform=p.transform_method, **kwargs)
             else:
-                p.pymc_distribution = Flat(p.name)
+                p.pymc_distribution = Flat(p.name, **kwargs)
             if hasattr(p.pymc_distribution, "transformation"):
                 p.backward, p.forward = get_transforms(p)
 
@@ -178,7 +183,7 @@ def load_data(data_file):
 
     n_trials = len(data) / n_subjects
 
-    sim_columns = [i for i in data.columns if '_sim' in i]
+    sim_columns = [i for i in data.columns if '_sim' in i or 'Subject' in i]
     if len(sim_columns):
         sims = data[sim_columns]
         sim_index = np.arange(0, len(data), n_trials)
