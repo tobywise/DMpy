@@ -52,12 +52,12 @@ In order for this to work properly, it's advisable to simulate across a range of
 
 This is an example of parameter recovery with a Rescorla-Wagner model, where we're assessing our ability to recover the alpha parameter. To simulate across a range of values of alpha, we provide a range from 0.1 to 0.9 in steps of 0.1 using ``np.arange(0.1, 1, 0.1)``.
 
-        >>> sim_rw = model_rw.simulate(outcomes, n_subjects=50,
-                                       response_file='parameter_recovery.csv',
-                                       learning_parameters={'value': 0.5, 'alpha0': np.arange(0.1, 1, 0.1)},
-                                       observation_parameters={'b':3})
-        Finished simulating
-        Saving simulated responses to parameter_recovery.csv
+    >>> sim_rw = model_rw.simulate(outcomes, n_subjects=50,
+                                   response_file='parameter_recovery.csv',
+                                   learning_parameters={'value': 0.5, 'alpha0': np.arange(0.1, 1, 0.1)},
+                                   observation_parameters={'b':3})
+    Finished simulating
+    Saving simulated responses to parameter_recovery.csv
 
 The simulation plots also now plot estimated probabilities and other values across the range of parameter values provided.
 
@@ -70,17 +70,17 @@ If we now fit our model to this data, we can see whether the alpha parameter is 
     Loading data
     Loading multi-subject data with 450 subjects
     Loaded data, 450 subjects with 120 trials
-
+    <BLANKLINE>
     -------------------Finding MAP estimate-------------------
-
+    <BLANKLINE>
     Performing model fitting for 450 subjects
-
+    <BLANKLINE>
     Optimization terminated successfully.
      Current function value: 21874.952537
      Iterations: 45
      Function evaluations: 72
      Gradient evaluations: 72
-
+    <BLANKLINE>
      Performing parameter recovery tests...
                alpha0                   Subject  alpha0_sim  value_sim
         0    0.172732    alpha0.0.1.value.0.5_0         0.1        0.5
@@ -88,7 +88,7 @@ If we now fit our model to this data, we can see whether the alpha parameter is 
         2    0.146754   alpha0.0.1.value.0.5_10         0.1        0.5
         3    0.111058   alpha0.0.1.value.0.5_11         0.1        0.5
         4    0.127479   alpha0.0.1.value.0.5_12         0.1        0.5
-
+    <BLANKLINE>
     Finished model fitting in 30.8701867692 seconds
 
 The parameter table has our simulated values in addition to the estimated values for each subject, and these are saved in the model's ``.parameter_table`` attribute.
@@ -104,7 +104,6 @@ Additionally, the fitting method produced two figures: a scatter plot showing th
 To illustrate this more clearly, let's look at an example of a more complex model for which parameters aren't recovered so accurately...
 
     >>> model_1lr.fit_MAP(outcomes, complex_model)
-
     Finished model fitting in 61.4955701763 seconds
 
 .. image:: complex_pr1.png
