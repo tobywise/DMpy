@@ -115,7 +115,7 @@ def generate_choices2(pa):
     Simulates choices based on choice probabilities
     """
 
-    return (np.random.random(len(pa)) < pa).astype(int)
+    return (np.random.random(pa.shape) < pa).astype(int)
 
 
 def backward(a, b, x):
@@ -163,7 +163,10 @@ def parameter_table(df_summary, subjects):
 
 def load_data(data_file):
 
-    data = pd.read_csv(data_file)
+    try:
+        data = pd.read_csv(data_file)
+    except ValueError:
+        raise ValueError("Responses are not in the correct format, ensure they are provided as a .csv or .txt file")
 
     if 'Subject' not in data.columns or 'Response' not in data.columns:
         raise ValueError("Data file must contain the following columns: Subject, Response")
@@ -175,13 +178,20 @@ def load_data(data_file):
 
     n_trials = len(data) / n_subjects
 
+    sim_columns = [i for i in data.columns if '_sim' in i]
+    if len(sim_columns):
+        sims = data[sim_columns]
+        sim_index = np.arange(0, len(data), n_trials)
+        sims = sims.iloc[sim_index]
+    else:
+        sims = None
+
+
     if n_subjects > 1:
         print "Loading multi-subject data with {0} subjects".format(n_subjects)
     else:
         print "Loading single subject data"
 
-    # seen = set()
-    # subjects = [i for i in data.Subject if i not in seen and not seen.add(i)]
     trial_index = np.tile(range(0, n_trials), n_subjects)
     data['Trial_index'] = trial_index
 
@@ -191,7 +201,7 @@ def load_data(data_file):
 
     print "Loaded data, {0} subjects with {1} trials".format(n_subjects, n_trials)
 
-    return subjects, data
+    return subjects, data, sims
 
 
 def load_outcomes(data):
@@ -263,27 +273,42 @@ def function_wrapper(f, n_returns, n_reused=1):
     return wrapped
 
 
-def simulated_responses(simulated, out_file, learning_parameters, observation_parameters):
+def simulated_responses(simulated, row_names, out_file, learning_parameters, observation_parameters, other_columns=None):
 
     """
     Turns output of simulation into response file
     """
+    n_subs = len(row_names)
+    print n_subs
 
-    if not isinstance(simulated, list):
-        simulated = [simulated]
+    if len(simulated.shape) > 1:
+        if simulated.shape[1] == n_subs:
+            responses = simulated.flatten('F') # this might depend on the simulated responses having shape (trials, subjects)
+        else:
+            responses = simulated.flatten()
+    row_names = np.array(row_names).repeat(len(responses) / len(row_names))
 
-    responses = []
-    subjects = []
+    df_dict = (dict(Response=responses, Subject=row_names))
 
-    for n, i in enumerate(simulated):
-        responses += i.tolist()
-        subjects += [n+1] * len(i)
+    if other_columns is not None:
+        if not isinstance(other_columns, dict):
+            raise AttributeError("Other columns should be supplied as a dictionary of format {name: values}")
+        else:
+            for k, v in other_columns.iteritems():
+                df_dict[k] = v
 
-    df = pd.DataFrame(dict(Response=responses, Subject=subjects,
-                           Learning_p=str(learning_parameters), Obs_p=str(observation_parameters)))
+    df = pd.DataFrame(df_dict)
 
-    # datetime = time.strftime("%Y%m%d-%H%M%S")
-    # sim_fname = os.path.join(out_dir, 'simulated_responses_{0}.txt'.format(datetime))
+    # add parameter columns
+    learning_colnames = [i + '_sim' for i in learning_parameters[0]]
+    observation_colnames = [i + '_sim' for i in observation_parameters[0]]
+
+    df[learning_colnames] = pd.DataFrame(
+        learning_parameters[1].repeat(len(responses) / len(learning_parameters[1]), axis=0))
+    # TODO observation parameter columns
+    # df[observation_colnames[0]] = pd.DataFrame(
+    #     observation_parameters[1].T.repeat(len(responses) / len(observation_parameters[1].T), axis=0))
+    # not sure why observation parameter array needs to be transposed
 
     print "Saving simulated responses to {0}".format(out_file)
     df.to_csv(out_file, index=False)

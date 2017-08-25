@@ -11,12 +11,20 @@ import re
 import pandas as pd
 import seaborn as sns
 from timeit import default_timer as timer
-from DMpy.DMpy import generate_pymc_distribution, n_returns, function_wrapper, load_data, load_outcomes, \
+from collections import OrderedDict
+from itertools import product, combinations
+from statsmodels.regression.linear_model import OLS
+from statsmodels.api import add_constant
+from DMpy.utils import generate_pymc_distribution, n_returns, function_wrapper, load_data, load_outcomes, \
     parameter_table, model_fit, generate_choices2, n_obs_dynamic, simulated_responses
 
 sns.set_style("white")
 sns.set_palette("Set1")
 
+# TODO rewrite fitting methods so there's a single .fit() method - can then use kwargs like seaborn (e.g. line kwargs)
+# TODO to pass args to underlying fitting functions
+
+# TODO different priors/simulation parameter values for each subject
 # TODO bayes optimal
 # TODO move hierarchical setting to parameters - allow more detail specification and combinations of h/non-h
 # TODO different outcome lists for different subjects
@@ -29,9 +37,24 @@ sns.set_palette("Set1")
 # TODO parallelisation
 
 
-def initialise_parameters(learning_parameters, observation_parameters, n_subjects, mle, hierarchical):
+def _initialise_parameters(learning_parameters, observation_parameters, n_subjects, mle, hierarchical):
 
-    # give parameters distributions etc
+    """
+    Assigns PyMC3 distributions to provided parameters. PyMC3 distribution is stored in the .pymc_distribution attribute
+
+    Args:
+        learning_parameters: Parameters for the learning model
+        observation_parameters: Parameters for the observation model
+        n_subjects: Number of subjects, used for determining shape of parameter arrays during fitting
+        mle: MLE flag - if true, parameters are assigned uniform/flat priors
+        hierarchical: Hierarchical flag - if true, hierarchical priors are added
+
+    Returns:
+        dynamic_parameters: list of dynamic parameters with distributions assigned
+        static_parameters: list of static parameters with distributions assigned
+        observation_parameters: the provided observation parameters, there's probably a reason for this but I can't remember
+                                it
+    """
 
     if type(learning_parameters) is not list:
         learning_parameters = [learning_parameters]
@@ -72,11 +95,16 @@ def initialise_parameters(learning_parameters, observation_parameters, n_subject
 
 class PyMCModel(Continuous):
 
+    """
+    Instance of PyMC3 model used to fit models
+
+    """
+
     def __init__(self, learning_models, learning_parameters, observation_model, observation_parameters, responses, hierarchical,
                  outcomes, mle=False, *args, **kwargs):
         super(PyMCModel, self).__init__(*args, **kwargs)
 
-        self.fit = False
+        self.fit_complete = False
 
         # Define parameter distributions
 
@@ -106,7 +134,7 @@ class PyMCModel(Continuous):
         ## initialise parameters
         
         self.dynamic_parameters, self.static_parameters, self.observation_parameters = \
-            initialise_parameters(self.learning_parameters, self.observation_parameters, self.n_subjects, mle,
+            _initialise_parameters(self.learning_parameters, self.observation_parameters, self.n_subjects, mle,
                                   hierarchical)
 
         ## learning models with multiple outputs
@@ -118,8 +146,19 @@ class PyMCModel(Continuous):
 
     def get_value(self, x):
 
-        # need to make sure order of arguments is right
-        # OR figure out a way to match scan arguments to function arguments
+        """
+        Function to run the learning and observation models on the provided outcome data
+
+        Need to make sure order of arguments is right
+        OR figure out a way to match scan arguments to function arguments
+
+
+        Args:
+            x: Outcome data
+
+        Returns:
+            prob: Probability of choosing an option
+        """
 
         # begin awful hack - there must be a better way to get values on trial+1 while retaining initial value on t = 0
 
@@ -160,7 +199,18 @@ class PyMCModel(Continuous):
         return prob
 
 
-    def logp(self, x):  # x = outcome data
+    def logp(self, x):
+        """
+
+        Calls the get_value function and then calculates logp for the model based on estimated probabilities
+
+        Args:
+            x: Outcome data
+
+        Returns:
+            Logp
+
+        """
         prob = self.get_value(x)
         ll = (np.log(prob[self.responses.T.nonzero()]).sum() + np.log(1 - prob[(1 - self.responses.T).nonzero()]).sum())
         return ll
@@ -178,7 +228,7 @@ class RLModel():
         self.trace = None
         self.simulated = []
         self._model = None
-        self.fit = False
+        self.fit_complete = False
 
         self.__n_learning_returns, self.__learning_returns = n_returns(self.learning_model)
         self.__n_observation_returns, self.__observation_returns = n_returns(self.observation_model)
@@ -212,12 +262,61 @@ class RLModel():
 
         n_obs_params = len(self.observation_parameters)
         self.__n_obs_dynamic = n_obs_dynamic(self.observation_model, n_obs_params)
-        
-        #############
-        
 
 
-    def fit_MCMC(self, outcomes, responses, hierarchical=False, plot=True, fit_stats=False, **kwargs):
+    def fit(self, outcomes, responses, fit_method='MLE', hierarchical=False, plot=True, fit_stats=False, recovery=True,
+            fit_kwargs=None, sample_kwargs=None):
+
+        """
+        General fitting method, calls appropriate underlying fitting methods as necessary
+
+        Args:
+            outcomes: task outcomes (e.g. A rewarded or not)
+            responses: subject responses, as a .txt or .csv file with columns ['Responses', 'Subject']
+            fit_method: method to use for fitting, one of 'MLE', 'MAP', 'Variational', 'MCMC', 'mle', 'map',
+                        'variational', 'mcmc'. Default = 'MLE'
+            hierarchical: Whether to perform hierarchical fitting - has no effect for MLE or MAP estimation. Default =
+                          False
+            plot: For sampling methods, provide traceplots. Default = True
+            fit_stats: Provide fit statistics. Provided because for some reason this can take a while for variational
+                        and MCMC methods so it can be convenient to turn it off when testing. Default = False
+            recovery: If simulated parameter values are provided in the response file, will calculate correlations between
+                      simulated and estimated parameters and produce correlation plots to assess parameter recovery success.
+                      Default = True
+            fit_kwargs: Dictionary of keyword arguments passed to underlying MLE, MAP and variational fitting functions.
+            sample_kwargs: Dictionary of keyword arguments passed to underlying variational and MCMC sampling functions.
+
+        """
+
+        allowed_methods = ['MLE', 'MAP', 'Variational', 'MCMC', 'mle', 'map', 'variational', 'mcmc']
+
+        if fit_kwargs is None:
+            fit_kwargs = {}
+        if sample_kwargs is None:
+            sample_kwargs = {}
+
+        if fit_method in ['MLE', 'mle']:
+            self._fit_MLE(outcomes=outcomes, responses=responses, plot=plot, recovery=recovery, **fit_kwargs)
+            
+        elif fit_method in ['MAP', 'map']:
+            self._fit_MAP(outcomes=outcomes, responses=responses, plot=True, recovery=recovery, **fit_kwargs)
+
+        elif fit_method in ['variational', 'Variational']:
+            self._fit_variational(outcomes=outcomes, responses=responses, plot=plot, hierarchical=hierarchical,
+                                  fit_stats=fit_stats, fit_kwargs=fit_kwargs, sample_kwargs=sample_kwargs)
+
+        elif fit_method in ['MCMC', 'mcmc']:
+            self._fit_MCMC(outcomes=outcomes, responses=responses, plot=plot, hierarchical=hierarchical, recovery=recovery,
+                           fit_stats=fit_stats, **sample_kwargs)
+
+        else:
+            raise ValueError("Invalid fitting method provided ({0}). Fit method should be one of {1}"
+                             .format(fit_method, allowed_methods))
+
+
+    def _fit_MCMC(self, outcomes, responses, hierarchical=False, plot=True, fit_stats=False, recovery=True, **kwargs):
+
+        sns.set_palette("deep")
 
         print "Loading data"
 
@@ -275,12 +374,15 @@ class RLModel():
 
 
         #self.log_likelihood, self.BIC, self.AIC = model_fit(rl.logp, self.fit_values, rl.vars)
-        self.fit = True
+        self.fit_complete = True
         end = timer()
         print "Finished model fitting in {0} seconds".format(end - start)
 
 
-    def fit_variational(self, outcomes, responses, plot=True, draws=100, hierarchical=True, fit_stats=False, **kwargs):
+    def _fit_variational(self, outcomes, responses, plot=True, hierarchical=True, fit_stats=False, fit_kwargs=None,
+                         sample_kwargs=None):
+
+        sns.set_palette("deep")
 
         print "Loading data"
 
@@ -316,8 +418,8 @@ class RLModel():
                           observation_parameters=[self.observation_parameters, self.__observation_dynamic_inputs],
                           responses=responses, observed=outcomes, outcomes=outcomes, hierarchical=hierarchical)
 
-            approx = fit(model=rl, **kwargs)
-            self.trace = sample_approx(approx, draws=draws)
+            approx = fit(model=rl, **fit_kwargs)
+            self.trace = sample_approx(approx, **sample_kwargs)
 
             print "Done"
 
@@ -325,7 +427,7 @@ class RLModel():
                 traceplot(self.trace)
 
         self.fit_values = pm.df_summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
-        self.fit = True
+        self.fit_complete = True
         self._model = rl
 
         # elif method == 'MAP':  # need to transform these values
@@ -358,11 +460,11 @@ class RLModel():
         print "Finished model fitting in {0} seconds".format(end - start)
 
 
-    def fit_MAP(self, outcomes, responses, plot=True, mle=False, **kwargs):
+    def _fit_MAP(self, outcomes, responses, plot=True, mle=False, recovery=True, **kwargs):
 
         print "Loading data"
 
-        self.subjects, responses = load_data(responses)
+        self.subjects, responses, sims = load_data(responses)
         n_subjects = len(self.subjects)
 
         outcomes = load_outcomes(outcomes)
@@ -410,7 +512,7 @@ class RLModel():
 
         # print self.raw_fit_values
 
-        self.fit = True
+        self.fit_complete = True
         # need to backwards transform these values
 
         untransformed_params = {}
@@ -436,8 +538,43 @@ class RLModel():
         else:
             self.parameter_table = pd.DataFrame(data=[self.subjects + self.fit_values.values()])
             self.parameter_table.columns = ['Subject'] + self.fit_values.keys()
-            print self.parameter_table
 
+        if recovery and sims is not None:
+            sns.set_palette("deep")
+            sims = sims.reset_index(drop=True)
+            self.parameter_table = pd.concat([self.parameter_table, sims], axis=1)
+            print "Performing parameter recovery tests..."
+            p_values = []
+            p_values_sim = []
+            n_p_free = len(self.fit_values.keys())
+            f, axarr = plt.subplots(1, n_p_free, figsize=(3 * n_p_free, 3.5))
+            for n, p in enumerate(self.fit_values.keys()):
+                print n
+                if p + '_sim' not in sims.columns:
+                    raise ValueError("Simulated values for parameter {0} not found in response file".format(p))
+                p_values.append(self.parameter_table[p])
+                p_values_sim.append(self.parameter_table[p + '_sim'])
+                if n_p_free > 1:
+                    ax = axarr[n]
+                else:
+                    ax = axarr
+                sns.regplot(self.parameter_table[p + '_sim'], self.parameter_table[p], ax=ax)
+                ax.set_xlabel('Simulated {0}'.format(p), fontweight='bold')
+                ax.set_ylabel('Estimated {0}'.format(p), fontweight='bold')
+                ax.set_title('Parameter {0}'.format(p), fontweight='bold')
+                sns.despine()
+            plt.tight_layout()
+            cor = np.corrcoef(p_values, p_values_sim)[n_p_free:, :n_p_free]
+            fig, ax = plt.subplots(figsize=(n_p_free * 2, n_p_free * 1.8))
+            cmap = sns.diverging_palette(220, 10, as_cmap=True)
+            sns.heatmap(cor, cmap=cmap, square=True, linewidths=.5, xticklabels=self.fit_values.keys(),
+                        yticklabels=self.fit_values.keys(), annot=True)
+            ax.set_xlabel('Simulated', fontweight='bold')
+            ax.set_ylabel('True', fontweight='bold')
+
+            self.recovery_correlations = cor
+
+        print self.parameter_table
 
         # self.logp = rl.logp
         # self.vars = rl.vars
@@ -449,20 +586,22 @@ class RLModel():
         print "Finished model fitting in {0} seconds".format(end-start)
 
 
-    def fit_MLE(self, outcomes, responses, plot=True, **kwargs):
+    def _fit_MLE(self, outcomes, responses, plot=True, recovery=True, **kwargs):
 
-        self.fit_MAP(outcomes=outcomes, responses=responses, plot=plot, mle=True, **kwargs)
+        self._fit_MAP(outcomes=outcomes, responses=responses, plot=plot, mle=True, recovery=recovery, **kwargs)
 
 
     def tracePlot(self):
-
+        sns.set_palette("deep")
         traceplot(self.trace)
 
 
     def simulate(self, outcomes, learning_parameters=None, observation_parameters=None, plot=False, responses=None,
-                 sim_choices=False, plot_outcomes=True, response_file='', n_subjects=1):
+                 plot_choices=False, return_prob=False, plot_outcomes=True, response_file='', n_subjects=1, correlations=False,
+                 plot_variance=False, plot_correlations=False, plot_value=True):
 
-        # TODO rework for hierarchical estimates - provide both group and individual parameter based simulations?
+        self.sim_learning_parameters = OrderedDict(learning_parameters)
+        self.sim_observation_parameters = OrderedDict(observation_parameters)
 
         sim_dynamic = []
         sim_static = []
@@ -471,17 +610,31 @@ class RLModel():
 
         outcomes = load_outcomes(outcomes)
 
-        ## TODO multi-subject observed data
+        if self.sim_learning_parameters == None and self.sim_observation_parameters == None:
+            raise ValueError("Must explicitly provide parameter values for simulation")
 
-        if learning_parameters == None and observation_parameters == None:
-            raise ValueError("Mst explicitly provide parameter values for simulation")
+        # create parameter combinations
+        list_params = []  # list of parameters with multiple values, useful for stuff later on
 
+        for p, v in self.sim_learning_parameters.iteritems():  # convert any single values to list
+            if hasattr(v, '__len__'):
+                list_params.append(p)
+            else:
+                self.sim_learning_parameters[p] = [v]
+
+        p_combinations = np.array(list(product(*self.sim_learning_parameters.values()))) # get product
+        p_combinations = p_combinations.repeat(n_subjects, axis=0)  # repeat x n_subjects
+
+        for n, (p, v) in enumerate(self.sim_learning_parameters.iteritems()):
+            self.sim_learning_parameters[p] = p_combinations[:, n]
+        # each parameter now has a list of values
+
+        # set up parameters
         for n, i in enumerate(self.learning_parameters):
             match = False
-            for p, v in learning_parameters.iteritems():
+            for p, v in self.sim_learning_parameters.iteritems():
                 if p == i.name:
                     if i.dynamic:
-                        # sim_dynamic.append(dict(initial=np.float64(v), taps=[-1]))
                         sim_dynamic.append(np.float64(v))
                     else:
                         sim_static.append(np.float64(v))
@@ -491,24 +644,26 @@ class RLModel():
 
         for i in self.observation_parameters:
             match = False
-            for p, v in observation_parameters.iteritems():
+            for p, v in self.sim_observation_parameters.iteritems():
                 if i.name == p:
-                    sim_observation.append(np.float64(v))
+                    sim_observation.append(np.ones(p_combinations.shape[0]) * v)
                     match = True
             if not match:
                 raise ValueError("Parameter {0} has no value provided".format(i.name))
 
+        # generate row names for output
+        rnames = []
+        rnames_short = []
 
-
-        ## learning models with multiple outputs
-        ## check number of dynamic parameters, if number of learning function outputs is longer, add nones to outputs info
+        for i in range(0, p_combinations.shape[0]):
+            rnames_short.append(str(p_combinations[i, :]))
+            rname = [str(x) for t in zip(self.sim_learning_parameters.keys(), p_combinations[i, :]) for x in t]
+            rnames.append('.'.join(rname) + '_{0}'.format(i))
 
         # simulate with scan
         #
         outcomes = np.array(outcomes)
         temp_outcomes = np.hstack([outcomes, 2])  # add an extra outcome to get outputs for the final trial if needed (e.g. PE)
-
-        print sim_dynamic
 
         value, updates = scan(fn=self.learning_model,
                               sequences=dict(input=temp_outcomes, taps=[-1]),
@@ -540,21 +695,30 @@ class RLModel():
         result_dict = dict(zip(return_names, eval_value))
         result_dict['P'] = prob
 
-        self.simulated.append((learning_parameters, observation_parameters, result_dict))
+        self.simulated.append((self.sim_learning_parameters, self.sim_observation_parameters, result_dict))
 
         return_names = [i.replace('[', '') for i in return_names]
         return_names = [i.replace(']', '') for i in return_names]
 
         if plot:
 
+            if len(prob.shape) < 2:
+                sns.set_palette(sns.color_palette(['#348ABD']))
+            else:
+                sns.set_palette("Blues")
+
             fig, axarr = plt.subplots(len(eval_value), 1, figsize=(8, 1.5 * len(eval_value)))
 
-            axarr[0].plot(eval_value[0], color='#add0e4', label='V')
-            axarr[0].plot(prob, color='#348ABD', label='P')
+            if plot_value:
+                axarr[0].plot(eval_value[0], color='#add0e4', label='V')
+            if len(prob.shape) < 2:
+                prob = prob.reshape((prob.shape[0], 1))
+            for n in range(0, prob.shape[1]):
+                axarr[0].plot(prob[:, n], label=str(p_combinations[n]))
             axarr[0].set_title('Choice probability', fontweight='bold')
 
 
-            if sim_choices:
+            if plot_choices:
                 axarr[0].scatter(np.arange(0, len(prob)), generate_choices2(prob), color='#72a23b', alpha=0.5,
                                  label='Simulated choices')
             if responses is not None:
@@ -565,29 +729,148 @@ class RLModel():
 
             axarr[0].set_xlim(0, len(prob))
             axarr[0].set_ylim(np.min(outcomes) - 0.5, np.max(outcomes) + 0.2)
-            axarr[0].legend(frameon=False, ncol=3, bbox_to_anchor=(0.8, 0.6), loc='lower center')
+            if prob.shape[1] < 8:
+                axarr[0].legend()
 
             for i in range(1, len(eval_value)):
-                axarr[i].plot(eval_value[i], color='#348ABD')
+                axarr[i].plot(eval_value[i])
                 axarr[i].set_xlim(0, len(prob))
                 axarr[i].set_title(return_names[i], fontweight='bold')
 
             plt.tight_layout()
 
-        choices = []
+        if correlations:
 
-        for i in range(n_subjects):
-            choices.append(generate_choices2(prob))
+            if len(prob.shape) < 2:
+                warnings.warn("Must provide multiple parameter values for correlations, skipping")
+
+            else:
+                cor = np.corrcoef(prob.T)
+                self.simulated_timeseries_correlation = np.mean(cor)
+
+                print "Mean correlation between simulated timeseries = {0}".format(self.simulated_timeseries_correlation)
+
+                if plot_correlations:
+
+                    fig, axarr = plt.subplots(figsize=(11, 9))
+                    cmap = sns.diverging_palette(220, 10, as_cmap=True)
+                    sns.heatmap(cor, cmap=cmap, square=True, linewidths=.5, xticklabels=rnames_short, yticklabels=rnames_short,
+                                annot=False)
+                    plt.yticks(rotation=0)
+                    plt.xticks(rotation=90)
+                    plt.title("Parameters = {0}".format(self.sim_learning_parameters.keys()), fontweight='bold')
+
+                    plt.tight_layout()
+
+                    sns.set_palette("deep")
+
+                    plt.figure()
+                    sns.kdeplot(cor.flatten(), shade=True)
+                    plt.tight_layout()
+
+        if plot_variance:
+
+            if not len(list_params):
+                warnings.warn("No parameters have more than one value, skipping variance plots")
+
+            else:
+
+                # awkward method
+                sns.set_palette("deep")
+
+                prob_df = pd.DataFrame(prob.T)  # convert probs to dataframe (allows grouped means etc)
+                prob_df = pd.concat([prob_df, pd.DataFrame(self.sim_learning_parameters)], axis=1)  # add parameters
+
+                fig, axarr = plt.subplots(len(list_params) + 2, 1, figsize=(10, 2 * (len(list_params) + 2)))
+
+                sensitivity_dict = OrderedDict()
+
+                for n, p in enumerate(list_params):
+                    temp_df = prob_df.groupby(p)
+                    cols = [i for i in prob_df.columns if type(i) != str]
+                    temp_df = temp_df[cols]
+                    mean = temp_df.mean()  # gives mean per level of p
+                    mean['run'] = np.arange(0, len(mean), 1)
+                    mean = pd.melt(mean, value_vars=[c for c in mean.columns if c != 'run'], id_vars='run')
+
+                    sns.tsplot(time='variable', value='value', unit='run', data=mean, ax=axarr[n],
+                               err_style="unit_traces")
+                    axarr[n].set_title(p, fontweight='bold')
+
+                    if plot_outcomes:
+                        axarr[n].scatter(np.arange(0, len(prob)), outcomes, facecolors='white', edgecolors='#696969',
+                                         linewidth=1, label='Outcomes', s=5)
+
+                    sensitivity_dict[p] = []  # for sensitivity analysis
+
+                # attempt at a variance-based sensitivity analysis (no existing methods deal with timeseries models)
+                # take variance in probability at each time point, use regression to see which parameters
+                # explain most variance
+
+                for i in range(0, len(outcomes)):
+                    y = prob_df[i]
+                    X = prob_df[list_params]
+                    X = add_constant(X)
+                    model = OLS(y, X)
+                    results = model.fit()
+                    for p in list_params:
+                        sensitivity_dict[p].append(results.params[p])
+
+                for p in list_params:
+                    axarr[-2].plot(sensitivity_dict[p], marker=None, label=p)
+                    axarr[-2].set_title('Variance explained', fontweight='bold')
+                c_ylim = np.array(axarr[-2].get_ylim())
+                c_ylim[1] += np.abs(c_ylim[0] - c_ylim[1]) / 3
+                axarr[-2].set_ylim(c_ylim)
+                axarr[-2].legend(ncol=len(list_params), loc='upper left', bbox_to_anchor=(0, 1))
+                axarr[-2].set_xlim((0, len(outcomes)))
+
+                # if plot_outcomes:
+                #     axarr[-2].scatter(np.arange(0, len(prob)), outcomes, facecolors='white', edgecolors='#696969',
+                #                      linewidth=1, label='Outcomes', s=5)
+
+                print "Correlation between beta timeseries"
+                print pd.DataFrame(sensitivity_dict).corr()
+
+                sensitivity_array = np.array(sensitivity_dict.values())
+                sensitivity_array = np.diff(sensitivity_array, axis=1)
+                print sensitivity_array.shape
+
+                for i in range(sensitivity_array.shape[0]):
+                    axarr[-1].plot((sensitivity_array[i, :] - sensitivity_array[i, :].min()) / sensitivity_array[i, :].max(),
+                                   label=sensitivity_dict.keys()[i])
+                c_ylim = np.array(axarr[-1].get_ylim())
+                c_ylim[1] += np.abs(c_ylim[0] - c_ylim[1]) / 3
+                axarr[-1].set_ylim(c_ylim)
+                axarr[-1].legend(ncol=len(list_params), loc='upper left', bbox_to_anchor=(0, 1))
+                axarr[-1].set_title("Beta timeseries direction", fontweight='bold')
+                axarr[-1].set_xlim((0, len(outcomes)))
+
+                # if plot_outcomes:
+                #     axarr[-1].scatter(np.arange(0, len(prob)), outcomes, facecolors='white', edgecolors='#696969',
+                #                      linewidth=1, label='Outcomes', s=5)
+
+                plt.tight_layout()
+
+        choices = generate_choices2(prob)
 
         print "Finished simulating"
+        sns.set_palette("deep")
 
         if len(response_file):
-            simulated_responses(choices, response_file, learning_parameters, observation_parameters)
+            if return_prob:
+                simulated_responses(prob, rnames, response_file,
+                                    (self.sim_learning_parameters.keys(), p_combinations),
+                                    (self.sim_observation_parameters.keys(), np.array(sim_observation)))
+            else:
+                simulated_responses(choices, rnames, response_file,
+                                    (self.sim_learning_parameters.keys(), p_combinations),
+                                    (self.sim_observation_parameters.keys(), np.array(sim_observation)))
             return response_file
-        elif sim_choices:
-            return choices[0]
-        else:
+        elif return_prob:
             return prob
+        else:
+            return choices[0]
 
 
 class Parameter():

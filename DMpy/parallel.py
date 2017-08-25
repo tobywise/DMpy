@@ -2,8 +2,6 @@ import sys
 
 import nipype.interfaces.utility as util
 import nipype.pipeline.engine as pe
-
-sys.path.insert(0, '/home/k1327409/rl/')
 import os
 import time
 import dill
@@ -12,8 +10,6 @@ import itertools
 
 def RL_parallel_fit_func(model, outcomes_responses, fit_method='MLE', **kwargs):
 
-    import sys
-    sys.path.insert(0, '/home/k1327409/rl/')
     import copy
     import time
     import os
@@ -21,6 +17,9 @@ def RL_parallel_fit_func(model, outcomes_responses, fit_method='MLE', **kwargs):
 
     if not isinstance(outcomes_responses, list):
         outcomes_responses = [outcomes_responses]
+
+    if isinstance(model, list):
+        model = model[0]  # TODO need to sort this out properly
 
     with open(model, 'rb') as f:
         model = dill.load(f)
@@ -30,7 +29,7 @@ def RL_parallel_fit_func(model, outcomes_responses, fit_method='MLE', **kwargs):
     if fit_method == 'MLE':
         for i in outcomes_responses:
             temp_model = copy.copy(model)
-            temp_model.outcomes_responses = outcomes_responses
+            temp_model.outcomes_responses = i
             temp_model.fit_MLE(i[0], i[1], **kwargs)
             temp_model.parameter_table['Outcomes_responses'] = str(temp_model.outcomes_responses)
             temp_model.parameter_table['Model'] = temp_model.name
@@ -39,19 +38,19 @@ def RL_parallel_fit_func(model, outcomes_responses, fit_method='MLE', **kwargs):
     elif fit_method == 'MAP':
         for i in outcomes_responses:
             temp_model = copy.copy(model)
-            temp_model.outcomes_responses = outcomes_responses
+            temp_model.outcomes_responses = i
             temp_model.fit_MLE(i[0], i[1], **kwargs)
-            temp_model.parameter_table['Outcomes_responses'] = temp_model.outcomes_responses
+            temp_model.parameter_table['Outcomes_responses'] = str(temp_model.outcomes_responses)
             temp_model.parameter_table['Model'] = temp_model.name
             fits.append(temp_model)
 
     elif fit_method == 'variational':
         raise NotImplementedError
 
-    elif fit_method == 'NUTS':
+    elif fit_method == 'MCMC':
         for i in outcomes_responses:
             temp_model = copy.copy(model)
-            temp_model.outcomes_responses = outcomes_responses
+            temp_model.outcomes_responses = i
             temp_model.fit_NUTS(i[0], i[1], **kwargs)
             temp_model.parameter_table['Outcomes_responses'] = str(temp_model.outcomes_responses)
             temp_model.parameter_table['Model'] = temp_model.name
@@ -68,7 +67,8 @@ def RL_parallel_fit_func(model, outcomes_responses, fit_method='MLE', **kwargs):
     return os.path.abspath(fits_fname)
 
 
-def RL_parallel_sim_func(model, outcomes, parameters, *args, **kwargs):  # sim choices is important here
+def RL_parallel_sim_func(model, outcomes, learning_parameters, observation_parameters,
+                         n_subjects=1, *args, **kwargs):
 
     import sys
     sys.path.insert(0, '/home/k1327409/rl/')
@@ -78,30 +78,39 @@ def RL_parallel_sim_func(model, outcomes, parameters, *args, **kwargs):  # sim c
     import dill
 
     if not isinstance(outcomes, list):
-        outcomes_responses = [outcomes]
+        outcomes = [outcomes]
 
-    with open(model, 'rb') as f:
-        model = dill.load(f)
+    if not isinstance(model, list):
+        outcomes = [model]
 
     fits = []
+    response_fnames = []
 
-    for i in outcomes_responses:
+    for n, i in enumerate(outcomes):
+
+        with open(model[n], 'rb') as f:
+            model = dill.load(f)
+
+        if len(i) > 2:
+            i = (i, '')
+
         temp_model = copy.copy(model)
-        temp_model.outcomes_responses = outcomes_responses
-        temp_model.fit_MLE(i[0], i[1])
-        temp_model.parameter_table['Outcomes_responses'] = str(temp_model.outcomes_responses)
-        temp_model.parameter_table['Model'] = temp_model.name
+        datetime = time.strftime("%Y%m%d-%H%M%S")
+        response_fname = '{0}_simulated_{1}.csv'.format(i[0], datetime)
+        temp_model.simulate(i[0], n_subjects=n_subjects, response_file=response_fname,
+                            learning_parameters=learning_parameters, observation_parameters=observation_parameters)
         fits.append(temp_model)
+        response_fnames.append(os.path.abspath(response_fname))
 
     datetime = time.strftime("%Y%m%d-%H%M%S")
     fits_fname = 'model_fits_{0}'.format(datetime)
     with open(fits_fname, 'wb') as f:
         dill.dump(fits, f)
 
-    return os.path.abspath(fits_fname)
+    return os.path.abspath(fits_fname), response_fnames
 
 
-def combine_fits_func(fits, dir):
+def combine_fits_func(fits, dir, sim=False, responses=None):
 
     import sys
     sys.path.insert(0, '/home/k1327409/rl/')
@@ -111,21 +120,31 @@ def combine_fits_func(fits, dir):
     import time
 
     unpickled_fits = []
+    fname = ''
 
-    for f in fits:
+    for n, f in enumerate(fits):
+        print "Loading fit chunk {0} of {1}".format(n+1, len(fits))
         with open(f, 'rb') as p:
             unpickled_fits.append(dill.load(p))
 
+    print "Loaded fits"
+
     fits = sum(unpickled_fits, [])  # collapse list
+    if sim:
+        responses = sum(responses, [])
 
     datetime = time.strftime("%Y%m%d-%H%M%S")
+
+    if not sim:
+        out_df = pd.concat([f.parameter_table for f in fits])
+        fname = os.path.join(dir, 'parameter_table_{0}.csv'.format(datetime))
+        out_df.to_csv(fname)
+        print "Written csv"
+
     fits_fname = os.path.join(dir, 'model_fits_{0}'.format(datetime))
     with open(fits_fname, 'wb') as f:
         dill.dump(fits, f)
-
-    out_df = pd.concat([f.parameter_table for f in fits])
-    fname = os.path.join(dir, 'parameter_table_{0}.csv'.format(datetime))
-    out_df.to_csv(fname)
+    print "Saved fits"
 
     return fits_fname, fname
 
@@ -142,8 +161,8 @@ class ParallelFit(object):
         self.out_dir = out_dir
         self.all_combinations = all_combinations
 
-        if self.method not in ['MLE', 'MAP', 'variational', 'NUTS']:
-            raise ValueError("Method must be either MLE, MAP, variational or NUTS")
+        if self.method not in ['MLE', 'MAP', 'variational', 'MCMC']:
+            raise ValueError("Method must be either MLE, MAP, variational or MCMC")
 
         self.pickled_models = []
 
@@ -162,13 +181,6 @@ class ParallelFit(object):
                 dill.dump(i, f)
             self.pickled_models.append(model_path)
 
-        # break responses/outcomes into chunks
-        # self.outcomes_responses = [("/home/k1327409/rl/outcomes.txt",
-        #                        "/home/k1327409/rl/simulated_choices_30.txt"),
-        #                       ("/home/k1327409/rl/outcomes.txt",
-        #                        "/home/k1327409/rl/simulated_choices_10.txt")
-        #                       ]
-
         if self.all_combinations:
             combinations = itertools.product(self.pickled_models, self.outcomes_responses)
             self.pickled_models_combined = []
@@ -183,6 +195,8 @@ class ParallelFit(object):
         if self.chunk_size > 1:
             self.outcomes_responses_combined = [self.outcomes_responses_combined[i:i + self.chunk_size] for i in
                                        xrange(0, len(self.outcomes_responses_combined), self.chunk_size)]
+            self.pickled_models_combined = [self.pickled_models_combined[i:i + self.chunk_size] for i in
+                                       xrange(0, len(self.pickled_models_combined), self.chunk_size)]
 
 
     def run(self, **kwargs):
@@ -192,6 +206,9 @@ class ParallelFit(object):
                                                          output_names=['fits'],
                                                          function=RL_parallel_fit_func),
                                  iterfield=['model', 'outcomes_responses'])
+        print "ITERFIELDS"
+        print len(self.pickled_models_combined)
+        print len(self.outcomes_responses_combined)
         RL_parallel_fit.inputs.model = self.pickled_models_combined
         RL_parallel_fit.inputs.outcomes_responses = self.outcomes_responses_combined
         RL_parallel_fit.inputs.fit_method = self.method
@@ -238,18 +255,19 @@ class ParallelSimulate(ParallelFit):
 
         RL_parallel_sim = pe.MapNode(name='RL_parallel_sim',
                                      interface=util.Function(input_names=['model', 'outcomes', 'parameters'],
-                                                             output_names=['fits'],
+                                                             output_names=['fits', 'responses'],
                                                              function=RL_parallel_sim_func),
                                      iterfield=['model', 'outcomes_responses'])
         RL_parallel_sim.inputs.model = self.pickled_models_combined
-        RL_parallel_sim.inputs.outcomes_responses = self.outcomes_responses_combined
+        RL_parallel_sim.inputs.outcomes = self.outcomes_responses_combined
         RL_parallel_sim.inputs.fit_method = self.method
 
         combine_fits = pe.Node(name='combine_fits',
-                               interface=util.Function(input_names=['fits', 'dir'],
+                               interface=util.Function(input_names=['fits', 'dir', 'sim'],
                                                        output_names=['fits', 'parameters'],
                                                        function=combine_fits_func))
         combine_fits.inputs.dir = self.out_dir
+        combine_fits.inputs.sim = True
 
         wf = pe.Workflow(name="RL_modelling")
         wf.base_dir = self.out_dir

@@ -52,7 +52,32 @@ def metalearning_pe(o, v, c, alpha0, c_alpha, m):
     return (value, confidence, c_m_alpha, d_m_alpha, pe)
 
 
-def metalearning_pe_2lr(o, v, c, alpha0, c_alpha_p, c_alpha_n, m):
+def metalearning_pe_2(o, v, c, alpha0, c_alpha, m):
+
+    """
+    From Vinckier et al., 2016, Molecular Psychiatry
+
+    C = confidence parameter, updated based on prediction error magnitude
+
+    """
+
+    pe = o - v
+
+    confidence = c + c_alpha * ((2 - np.abs(np.tanh(pe * 5))) / 2 - c)
+
+    c_m_alpha = (alpha0 + m * confidence) / (1 + m * confidence)  # confirmatory alpha
+    d_m_alpha = alpha0 / (1 + m * confidence)  # same for non-confirmatory outcomes
+
+    alpha_m = T.switch(T.eq(v.round(), o),  # switch = theano equivalent of if/else statement
+                       c_m_alpha,
+                       d_m_alpha)
+
+    value = v + alpha_m * pe
+
+    return (value, confidence, c_m_alpha, d_m_alpha, pe)
+
+
+def metalearning_pe_2lr_2(o, v, c, alpha0, c_alpha_p, c_alpha_n, m):
 
     """
     Adapted from Vinckier et al., 2016, Molecular Psychiatry
@@ -83,6 +108,40 @@ def metalearning_pe_2lr(o, v, c, alpha0, c_alpha_p, c_alpha_n, m):
     value = v + alpha_m * pe
 
     return (value, confidence, c_m_alpha, d_m_alpha, pe, c_update)
+
+
+def metalearning_pe_2lr(o, v, c, alpha0, c_alpha_p, c_alpha_n, m):
+
+    """
+    Adapted from Vinckier et al., 2016, Molecular Psychiatry
+
+    C = confidence parameter, updated based on prediction error magnitude
+
+    c_alpha_p = confidence learning rate for increases in confidence
+    c_alpha_n = confidence learning rate for decreases in confidence
+
+    """
+
+    pe = o - v
+
+    # c_update = ((2 - np.abs(np.tanh(pe * 5))) / 2 - c)
+    c_update = ((2 - np.abs(pe)) / 2 - c)
+
+    confidence = T.switch(T.gt(c_update, 0),
+                          c + c_alpha_p * c_update,  # positive learning rate update
+                          c + c_alpha_n * c_update)  # negative learning rate update
+
+    c_m_alpha = (alpha0 + m * confidence) / (1 + m * confidence)  # confirmatory alpha
+    d_m_alpha = alpha0 / (1 + m * confidence)  # same for non-confirmatory outcomes
+
+    alpha_m = T.switch(T.eq(v.round(), o),  # switch = theano equivalent of if/else statement
+                       c_m_alpha,
+                       d_m_alpha)
+
+    value = v + alpha_m * pe
+
+    return (value, confidence, c_m_alpha, d_m_alpha, pe)
+
 
 
 def sk1(o, v, beta, h, k, mu, rhat):
