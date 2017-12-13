@@ -11,6 +11,12 @@ Contents:
 .. toctree::
    :maxdepth: 2
 
+   simulation
+   model_fitting
+   model_fitting_errors
+   model_specification
+   api/modules
+
 
 
 Indices and tables
