@@ -15,7 +15,7 @@ Contents:
    model_fitting
    model_fitting_errors
    model_specification
-   api/modules
+   api
 
 
 
