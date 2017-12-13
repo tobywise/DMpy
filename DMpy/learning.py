@@ -15,7 +15,7 @@ dynamic estimates that aren't reused (e.g. pe)
 
 # TODO would be better for all functions to return a consistent number of outputs, could wrap to achieve this
 
-def rescorla_wagner(o, v, alpha):
+def rescorla_wagner(o, t, v, alpha):
     """
     o: outcome
     v: prior value
@@ -27,7 +27,7 @@ def rescorla_wagner(o, v, alpha):
     return (value, pe)
 
 
-def metalearning_pe(o, v, c, alpha0, c_alpha, m):
+def metalearning_pe(o, t, v, c, alpha0, c_alpha, m):
 
     """
     From Vinckier et al., 2016, Molecular Psychiatry
@@ -52,120 +52,53 @@ def metalearning_pe(o, v, c, alpha0, c_alpha, m):
     return (value, confidence, c_m_alpha, d_m_alpha, pe)
 
 
-def metalearning_pe_2(o, v, c, alpha0, c_alpha, m):
+def sk1(o, t, v, beta, h,  mu, rhat):
 
-    """
-    From Vinckier et al., 2016, Molecular Psychiatry
-
-    C = confidence parameter, updated based on prediction error magnitude
-
-    """
-
-    pe = o - v
-
-    confidence = c + c_alpha * ((2 - np.abs(np.tanh(pe * 5))) / 2 - c)
-
-    c_m_alpha = (alpha0 + m * confidence) / (1 + m * confidence)  # confirmatory alpha
-    d_m_alpha = alpha0 / (1 + m * confidence)  # same for non-confirmatory outcomes
-
-    alpha_m = T.switch(T.eq(v.round(), o),  # switch = theano equivalent of if/else statement
-                       c_m_alpha,
-                       d_m_alpha)
-
-    value = v + alpha_m * pe
-
-    return (value, confidence, c_m_alpha, d_m_alpha, pe)
-
-
-def metalearning_pe_2lr_2(o, v, c, alpha0, c_alpha_p, c_alpha_n, m):
-
-    """
-    Adapted from Vinckier et al., 2016, Molecular Psychiatry
-
-    C = confidence parameter, updated based on prediction error magnitude
-
-    c_alpha_p = confidence learning rate for increases in confidence
-    c_alpha_n = confidence learning rate for decreases in confidence
-
-    """
-
-    pe = o - v
-
-    # c_update = ((2 - np.abs(np.tanh(pe * 5))) / 2 - c)
-    c_update = ((1 - np.tanh(np.abs(pe*2))) / 1 - c)
-
-    confidence = T.switch(T.gt(c_update, 0),
-                          c + c_alpha_p * c_update,  # positive learning rate update
-                          c + c_alpha_n * c_update)  # negative learning rate update
-
-    c_m_alpha = (alpha0 + m * confidence) / (1 + m * confidence)  # confirmatory alpha
-    d_m_alpha = alpha0 / (1 + m * confidence)  # same for non-confirmatory outcomes
-
-    alpha_m = T.switch(T.eq(v.round(), o),  # switch = theano equivalent of if/else statement
-                       c_m_alpha,
-                       d_m_alpha)
-
-    value = v + alpha_m * pe
-
-    return (value, confidence, c_m_alpha, d_m_alpha, pe, c_update)
-
-
-def metalearning_pe_2lr(o, v, c, alpha0, c_alpha_p, c_alpha_n, m):
-
-    """
-    Adapted from Vinckier et al., 2016, Molecular Psychiatry
-
-    C = confidence parameter, updated based on prediction error magnitude
-
-    c_alpha_p = confidence learning rate for increases in confidence
-    c_alpha_n = confidence learning rate for decreases in confidence
-
-    """
-
-    pe = o - v
-
-    # c_update = ((2 - np.abs(np.tanh(pe * 5))) / 2 - c)
-    c_update = ((2 - np.abs(pe)) / 2 - c)
-
-    confidence = T.switch(T.gt(c_update, 0),
-                          c + c_alpha_p * c_update,  # positive learning rate update
-                          c + c_alpha_n * c_update)  # negative learning rate update
-
-    c_m_alpha = (alpha0 + m * confidence) / (1 + m * confidence)  # confirmatory alpha
-    d_m_alpha = alpha0 / (1 + m * confidence)  # same for non-confirmatory outcomes
-
-    alpha_m = T.switch(T.eq(v.round(), o),  # switch = theano equivalent of if/else statement
-                       c_m_alpha,
-                       d_m_alpha)
-
-    value = v + alpha_m * pe
-
-    return (value, confidence, c_m_alpha, d_m_alpha, pe)
-
-
-
-def sk1(o, v, beta, h, k, mu, rhat):
     """
     Sutton (1992)
     """
 
     pe = o - v  # prediction error
 
+    beta = T.switch(T.eq(t, 0), T.log(rhat), beta)
     beta = beta + mu * pe * h  # update beta
 
-    k = T.exp(beta) / (rhat + T.exp(beta)) # update learning rate
+    phatii = T.exp(beta)
+
+    k = phatii / (rhat + phatii) # update learning rate
 
     h = (h + k * pe) * T.maximum(0, 1 - k) # update h
 
     value = v + k * pe
 
-    return (value, beta, h, k, pe)
+    return (value, beta, h, k, pe, phatii)
 
 
-def hgf_binary(o, muhat1, mu2, mu3, pi2, pi3, rho2, rho3, ka2, om2, om3):
+def hgf_binary(o, t, mu1, mu2, mu3, pi2, pi3, rho2, rho3, ka2, om2, om3):
 
     """
-    Mathys et al., 2011
+        Mathys et al., 2011
+
+    Implementation in DMpy works very slightly differently the the HGF toolbox. DMpy assumes that estimated value is
+    estimated after seeing the outcome on the current trial, while the HGF toolbox reports predicted value for the
+    current trial. To get the HGF to return the appropriate estimated value here, we add the estimated mu1 at the end
+    of the update loop, which provides the estimated value after seeing the outcome on each trial.
+
+    Args:
+        o: Outcome
+        mu1: Estimation of stimulus category (not used, DMpy just expects this input)
+        mu2: Estimation of stimulus tendency toward 0 or 1
+        mu3: Estimation of volatility
+        pi2: Precision of second level estimation
+        pi3: Precision of third level estimation
+        rho2:
+        rho3:
+        ka2:
+        om2:
+        om3:
+
+    Returns:
+
     """
 
     # 2nd level prediction
@@ -229,11 +162,36 @@ def hgf_binary(o, muhat1, mu2, mu3, pi2, pi3, rho2, rho3, ka2, om2, om3):
     # volatility prediction error
     da3 = (1. / pi3 + (mu3 - muhat3) ** 2) * pihat3 -1
 
-    return (muhat1, mu2, mu3, pi2, pi3, da1, da2, da3)
+    # add mu (this is the updated muhat1 after seeing the outcome on this trial, and is necessary for DMpy)
+    mu1 = T.nnet.sigmoid(mu2 + t * rho2)
+
+    return (mu1, mu2, mu3, pi2, pi3, da1, da2, da3)
 
 
+def dual_lr_qlearning(o, t, v, alpha_p, alpha_n):
 
+    """
+    Dual learning rate Q-learning model, from Palminteri et al., 2017, Nature Human Behaviour
 
+    Args:
+        o: Trial outcome
+        v: Value on previous trial
+        alpha_p: Learning rate for positive prediction errors
+        alpha_n: Learning rate for negative prediction errors
+
+    Returns:
+        value: Value on current trial
+        pe: prediction error
+        weighted_pe: prediction error weighted by learning rate
+    """
+
+    pe = o - v
+
+    weighted_pe = T.switch(T.lt(pe, 0), alpha_n * pe, alpha_p * pe)
+
+    value = v + weighted_pe
+
+    return (value, pe, weighted_pe)
 
 
 

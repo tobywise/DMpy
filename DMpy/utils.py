@@ -1,4 +1,5 @@
 import numpy as np
+import theano.tensor as T
 from pymc3 import Model, Normal, HalfNormal, DensityDist, Potential, Bound, Uniform, fit, sample_approx, \
     Flat, Deterministic
 import warnings
@@ -22,7 +23,6 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
     """
     Turns parameters into pymc3 parameter distributions for model fitting
     """
-
     if hasattr(p, '__pymc_kwargs'):
         kwargs = p.__pymc_kwargs
     else:
@@ -33,6 +33,16 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
         if p.upper_bound is not None and p.lower_bound is not None:
             print("\nParameter {0} distribution is {1}, converting to uniform with bounds ({2}, {3}) for MLE".format(
                 p.name, p.distribution, p.lower_bound, p.upper_bound
+            ))
+            p.distribution = 'uniform'
+        elif p.upper_bound is not None:
+            print("\nParameter {0} distribution is {1}, converting to uniform with upper bound {2}) for MLE".format(
+                p.name, p.distribution, p.upper_bound
+            ))
+            p.distribution = 'uniform'
+        elif p.lower_bound is not None:
+            print("\nParameter {0} distribution is {1}, converting to uniform with lower bound {2}) for MLE".format(
+                p.name, p.distribution, p.lower_bound
             ))
             p.distribution = 'uniform'
         else:
@@ -129,14 +139,14 @@ def backward(a, b, x):
     return r
 
 
-def model_fit(logp, fit_values, vars, outcome, individual=True):
+def model_fit(logp, fit_values, vars, outcome):
 
     """
     Calculates model fit statistics (log likelihood, BIC, AIC)
     """
 
     log_likelihood = logp(fit_values)
-    BIC = len(vars) * np.log(len(outcome)) - 2. * log_likelihood  # might be the BIC
+    BIC = len(vars) * np.log(len(outcome)) - 2. * log_likelihood
     AIC = 2. * (len(vars) - log_likelihood)
 
     return log_likelihood, BIC, AIC
@@ -154,7 +164,10 @@ def parameter_table(df_summary, subjects):
 
     n_subjects = len(subjects)
     n_parameters = len(df_summary) / n_subjects
-    subject_column = pd.Series(subjects * n_parameters)
+    print subjects
+    subject_column = pd.Series(np.tile(subjects, n_parameters))
+    print df_summary
+    print subject_column.values
     df_summary['Subject'] = subject_column.values
     if len(subjects) > 1:
         df_summary['index'] = pd.Series([re.search('.+(?=__)', i).group() for i in df_summary['index']]).values
@@ -166,7 +179,9 @@ def parameter_table(df_summary, subjects):
     return df_summary
 
 
-def load_data(data_file):
+def load_data(data_file, exclude=None):
+
+    # TOOD rewrite all of this
 
     try:
         data = pd.read_csv(data_file)
@@ -176,37 +191,66 @@ def load_data(data_file):
     if 'Subject' not in data.columns or 'Response' not in data.columns:
         raise ValueError("Data file must contain the following columns: Subject, Response")
 
-    n_subjects = len(np.unique(data['Subject']))
+    if exclude is not None:
+        if not isinstance(exclude, list):
+            exclude = [exclude]
+        data = data[~data.Subject.isin(exclude)]
+        print "Excluded subjects: {0}".format(exclude)
+
+    subjects = np.unique(data.Subject)
+    n_subjects = len(subjects)
+
+    if 'Run' in data.columns and np.max(data['Run']) > 0:
+        n_runs = len(np.unique(data['Run']))
+        # if len(data) / float(n_runs) != n_subjects:
+        #     print len(data)
+        #     print float(n_runs)
+        #     print n_subjects
+        #     raise ValueError("All subjects must have the same number of runs")  # might not actually be necessary
+    else:
+        n_runs = 1
+
 
     if len(data) % n_subjects:
         raise AttributeError("Unequal number of trials across subjects")
 
-    n_trials = len(data) / n_subjects
+    n_trials = len(data) / (n_runs * n_subjects)
 
     sim_columns = [i for i in data.columns if '_sim' in i or 'Subject' in i]
-    if len(sim_columns):
+    if len(sim_columns) > 1:
         sims = data[sim_columns]
         sim_index = np.arange(0, len(data), n_trials)
         sims = sims.iloc[sim_index]
     else:
         sims = None
 
-
     if n_subjects > 1:
-        print "Loading multi-subject data with {0} subjects".format(n_subjects)
+        print "Loading multi-subject data with {0} subjects, {1} runs per subject".format(n_subjects,
+                                                                                          len(np.unique(n_runs)))
     else:
         print "Loading single subject data"
 
-    trial_index = np.tile(range(0, n_trials), n_subjects)
+    try:
+        trial_index = np.tile(range(0, n_trials), n_runs * n_subjects)
+    except:
+        raise ValueError("Each run must have the same number of trials")
     data['Trial_index'] = trial_index
 
-    data = data.pivot(columns='Subject', values='Response', index='Trial_index')
-    subjects = list(data.columns)
-    data = data.values.T
+    if 'Run' in data.columns:
+        data['Subject'] = data['Subject'].astype(str) + data['Run'].astype(str)
+
+    responses = np.split(data.Response.values, n_subjects * n_runs)
+    responses = np.array(responses)
+
+    if 'Outcome' in data.columns:
+        outcomes = np.split(data.Outcome.values, n_subjects * n_runs)
+        outcomes = np.array(outcomes).T
+    else:
+        outcomes = None
 
     print "Loaded data, {0} subjects with {1} trials".format(n_subjects, n_trials)
 
-    return subjects, data, sims
+    return subjects, n_runs, responses, sims, outcomes
 
 
 def load_outcomes(data):
@@ -268,9 +312,24 @@ def n_obs_dynamic(f, n_obs_params):
 
 def function_wrapper(f, n_returns, n_reused=1):
 
+    """
+    Wraps user-defined functions to return unprocessed inputs
+
+    Args:
+        f: Function
+        n_returns: Number of return values given by the function
+        n_reused: Number of return values that are re-entered into the function at the next time step
+
+    Returns:
+        wrapped: The wrapped function
+
+        Seems to just return the first argument value (should be the value argument) as many times as there are outputs?
+
+    """
+
     def wrapped(*args):
         outs = [args[0]] * n_returns
-        outs[0:n_reused] = args[1:n_reused + 1]
+        outs[0:n_reused] = args[2:n_reused + 2]
         outs = tuple(outs)
 
         return outs
@@ -278,7 +337,8 @@ def function_wrapper(f, n_returns, n_reused=1):
     return wrapped
 
 
-def simulated_responses(simulated, row_names, out_file, learning_parameters, observation_parameters, other_columns=None):
+def simulated_responses(simulated, outcomes, row_names, runs, out_file, learning_parameters, observation_parameters,
+                        other_columns=None):
 
     """
     Turns output of simulation into response file
@@ -289,11 +349,18 @@ def simulated_responses(simulated, row_names, out_file, learning_parameters, obs
     if len(simulated.shape) > 1:
         if simulated.shape[1] == n_subs:
             responses = simulated.flatten('F') # this might depend on the simulated responses having shape (trials, subjects)
+            outcomes = outcomes.flatten(
+                'F')  # this might depend on the simulated responses having shape (trials, subjects)
         else:
             responses = simulated.flatten()
+            outcomes = outcomes.flatten()
+    else:
+        responses = simulated.flatten()
+        outcomes = outcomes.flatten()
     row_names = np.array(row_names).repeat(len(responses) / len(row_names))
+    runs = np.array(runs).repeat(len(responses) / len(runs))
 
-    df_dict = (dict(Response=responses, Subject=row_names))
+    df_dict = (dict(Response=responses, Outcome=outcomes, Subject=row_names, Run=runs))
 
     if other_columns is not None:
         if not isinstance(other_columns, dict):
@@ -302,18 +369,14 @@ def simulated_responses(simulated, row_names, out_file, learning_parameters, obs
             for k, v in other_columns.iteritems():
                 df_dict[k] = v
 
+    #print df_dict
     df = pd.DataFrame(df_dict)
 
     # add parameter columns
-    learning_colnames = [i + '_sim' for i in learning_parameters[0]]
-    observation_colnames = [i + '_sim' for i in observation_parameters[0]]
+    parameter_colnames = [i + '_sim' for i in learning_parameters[0] + observation_parameters[0]]
 
-    df[learning_colnames] = pd.DataFrame(
+    df[parameter_colnames] = pd.DataFrame(
         learning_parameters[1].repeat(len(responses) / len(learning_parameters[1]), axis=0))
-    # TODO observation parameter columns
-    # df[observation_colnames[0]] = pd.DataFrame(
-    #     observation_parameters[1].T.repeat(len(responses) / len(observation_parameters[1].T), axis=0))
-    # not sure why observation parameter array needs to be transposed
 
     print "Saving simulated responses to {0}".format(out_file)
     df.to_csv(out_file, index=False)
@@ -400,3 +463,18 @@ def model_check(model_function, parameters):
             exec ('print {0}'.format(i))
 
 
+def r2(true, predicted):
+
+    if true.shape != true.shape:
+        try:
+            raise AttributeError("True and predicted arrays should have the same shape, current shapes: True = {0},"
+                                 " predicted = {1}".format(true.shape, predicted.shape))
+        except:
+            raise AttributeError("True and predicted arrays should have the same shape")
+
+    sst = T.power(true - true.mean(), 2).sum()
+    ssr = T.power(true - predicted, 2).sum()
+
+    r2 = 1 - ssr / sst
+
+    return r2

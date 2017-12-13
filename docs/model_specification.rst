@@ -69,6 +69,8 @@ In place of:
 
 Although translating from python/numpy to Theano is a little awkward, the theano documentation is clear and it's typically not difficult to find the desired function.
 
+It currently isn't possible to refer to values prior to t-1.
+
 
 Observation models
 ------------------

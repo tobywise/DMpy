@@ -32,13 +32,15 @@ Results of the simulation are saved in the ``simulated`` attribute of the model 
     >>> print prediction_errors[:10]
     [-0.5  0.65  0.455  0.3185  0.22295  0.156065  0.1092455  0.07647185  0.0535303  0.03747121]
 
-.. note:: The position of the values returned by the ``simulate`` method relative to each trial is important to be aware of, and differs depending on the type of variable being returned. The estimated value, and any other variable that is entered into the learning model's calculation at each step is provided *prior* to the model seeing the outcome of the trial. For instance, if we set the initial estimated value at 0.5, the estimated value in the first trial of the simulated data will be 0.5. In contrast, other outputs (such as prediction errors) are provided on the same trial as the outcome. So for example the first prediction error would be the prediction error produced by the first trial.
+The position of the values returned by the ``simulate`` method relative to each trial is important to be aware of, and differs depending on the type of variable being returned. The estimated value, and any other variable that is entered into the learning model's calculation at each step is provided *prior* to the model seeing the outcome of the trial. For instance, if we set the initial estimated value at 0.5, the estimated value in the first trial of the simulated data will be 0.5. In contrast, other outputs (such as prediction errors) are provided on the same trial as the outcome. So for example the first prediction error would be the prediction error produced by the first trial.
 
 If multiple subjects are simulated, the arrays for each variable returned by the simulation become two-dimensional (n_trials, n_subjects).
 
     >>> prediction_errors_multisubject = model_rw.simulated[-1][2]['pe']
     >>> print prediction_errors_multisubject.shape
     (120L, 3L)
+
+It is also possible to simulate multiple runs per subject by using the ``runs_per_subject`` argument. If an integer is given, a "Run" column will be produced in the response file, and each run for the subject will use the same parameter values. Note that this process is essentially identical to simulating multiple subjects except for the labelling in the output file (i.e. being labelled as a run instead of a subject) - this simply makes it simpler when fitting models to simulated data that involve multiple runs.
 
 
 Parameter recovery
