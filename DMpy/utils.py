@@ -6,8 +6,6 @@ import warnings
 import inspect
 import re
 import pandas as pd
-import time
-import os
 import sys
 from io import BytesIO as StringIO
 import contextlib
@@ -164,10 +162,7 @@ def parameter_table(df_summary, subjects):
 
     n_subjects = len(subjects)
     n_parameters = len(df_summary) / n_subjects
-    print subjects
     subject_column = pd.Series(np.tile(subjects, n_parameters))
-    print df_summary
-    print subject_column.values
     df_summary['Subject'] = subject_column.values
     if len(subjects) > 1:
         df_summary['index'] = pd.Series([re.search('.+(?=__)', i).group() for i in df_summary['index']]).values
@@ -465,6 +460,9 @@ def model_check(model_function, parameters):
 
 def r2(true, predicted):
 
+    print true
+    print predicted
+
     if true.shape != true.shape:
         try:
             raise AttributeError("True and predicted arrays should have the same shape, current shapes: True = {0},"
@@ -472,9 +470,22 @@ def r2(true, predicted):
         except:
             raise AttributeError("True and predicted arrays should have the same shape")
 
-    sst = T.power(true - true.mean(), 2).sum()
-    ssr = T.power(true - predicted, 2).sum()
+    if len(true) < 2 or len(predicted) < 2:
+        r2 = np.nan
 
-    r2 = 1 - ssr / sst
+    else:
+        sst = T.power(true - true.mean(), 2).sum()
+
+        if sst == 0:
+            r2 = np.nan
+        else:
+            ssr = T.power(true - predicted, 2).sum()
+
+            r2 = 1 - ssr / sst
 
     return r2
+
+def log_likelihood(true, predicted):
+
+    return (np.log(predicted[true.nonzero()]).sum() +
+     np.log(1 - predicted[(1 - true).nonzero()]).sum())

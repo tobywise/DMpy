@@ -194,7 +194,27 @@ def dual_lr_qlearning(o, t, v, alpha_p, alpha_n):
     return (value, pe, weighted_pe)
 
 
+def uncertainty_dlr(o, t, v, alpha, beta):
 
+    """
+    Dynamic learning rate model where learning rate varies depending on magnitude of squared prediction errors
 
+    Args:
+        o: Outcome
+        t: Trial
+        v: Value from previous trial
+        alpha: Previous learning rate
+        beta: Free parameter governing the degree to which the learning date changes on each trial
+
+    Returns:
+
+    """
+
+    pe = o - v
+    value = v + alpha * pe
+
+    alpha_m = alpha + beta * (T.pow(pe, 2) - alpha)
+
+    return (value, alpha_m, pe)
 
 

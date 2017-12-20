@@ -15,7 +15,7 @@ from timeit import default_timer as timer
 from collections import OrderedDict
 from itertools import product
 from DMpy.utils import generate_pymc_distribution, n_returns, function_wrapper, load_data, load_outcomes, \
-    parameter_table, model_fit, generate_choices2, n_obs_dynamic, simulated_responses, r2
+    parameter_table, model_fit, generate_choices2, n_obs_dynamic, simulated_responses, r2, log_likelihood
 
 sns.set_style("white")
 sns.set_palette("Set1")
@@ -102,7 +102,7 @@ def _add_noise(timeseries, mean, sd, lower_bound=0, upper_bound=1):
 class _PyMCModel(Continuous):
 
     """
-    Instance of PyMC3 model used to fit models. Used internally by RLModel class - do not use directly.
+    Instance of PyMC3 model used to fit models. Used internally by DMModel class - do not use directly.
     """
 
     def __init__(self, learning_models, learning_parameters, observation_model, observation_parameters, responses, hierarchical,
@@ -210,6 +210,7 @@ class _PyMCModel(Continuous):
 
         if self.observation_model is not None:
             prob, obs_outs = self.observation_model(*observation_dynamics + self.observation_parameters_reshaped)
+            # prob = None  # TODO Surely this should cause a problem?
             prob = prob.squeeze()
         else:
             prob = value[0]
@@ -231,20 +232,18 @@ class _PyMCModel(Continuous):
         prob = self.get_value(x)
 
         if self.logp_method == 'll':
-            ll = (np.log(prob[self.responses.nonzero()]).sum() +
-                  np.log(1 - prob[(1 - self.responses).nonzero()]).sum())
+            logp = log_likelihood(self.responses, prob)
 
         elif self.logp_method == 'r2':
-            ll = r2(self.responses, prob) * 10000
-            # ll = 1
+            logp = r2(self.responses, prob) * 10000
 
         else:
             raise ValueError("Invalid likelihood function specified")
 
-        return ll
+        return logp
 
 
-class RLModel():
+class DMModel():
 
     """
     Class used for defining DMpy models
@@ -633,7 +632,7 @@ class RLModel():
     def simulate(self, outcomes=None, learning_parameters=None, observation_parameters=None, plot=False, responses=None,
                  plot_choices=False, output_value=False, plot_outcomes=True, output_file='', n_subjects=1,
                  plot_value=True, legend=False, combinations=False, runs_per_subject=1, palette='Blues',
-                 plot_against_true=False, noise=False, noise_mean=0, noise_sd=0.1):
+                 plot_against_true=False, response_format='continuous', noise=False, noise_mean=0, noise_sd=0.1):
 
         """
         Args:
@@ -653,6 +652,7 @@ class RLModel():
             runs_per_subject: Number of runs to simulate per subject
             palette: Seaborn colour palette to use in plotting
             plot_against_true: If the model has been fit, produces a plot for each subject of their true responses against responses simulated using their best fitted parameter estimates
+            response_format: The type of responses to be plotted (either 'continuous' or 'discrete'). If continuous, responses will be plotted as a line, if discrete they will be plotted as points. Default: 'continuous'
             noise: Adds gaussian-distributed noise to the estimated value
             noise_mean: If noise is true, sets the mean of the noise distribution (can be useful for adding a bias to subjects' responses)
             noise_sd: If noise is true, sets the standard deviation of the noise distribution
@@ -716,7 +716,7 @@ class RLModel():
                 for p in observation_parameter_names:
                     if p not in self.sim_observation_parameters.keys():
                         mean = [i.mean for i in self.observation_parameters if i.name == p]
-                        self.sim_observation_parameters[p] = np.repeat(mean, np.sum(self.n_runs))
+                        self.sim_observation_parameters[p] = np.repeat(mean, self.n_runs * self.n_subjects)
         else:
             params_from_fit = False
 
@@ -743,6 +743,7 @@ class RLModel():
 
         else: # get pairs of parameters
             pairs = []
+            print p_values
             if not all(len(i) == len(p_values[0]) for i in p_values):
                 raise ValueError("Each parameter should have the same number of values")
             else:
@@ -805,6 +806,8 @@ class RLModel():
 
         # simulation structure = parameter combinations repeated for each subject e.g. S1P1 S1P2 S2P1 S2P2...
 
+        # all of the following section is terribly written and involves a million (unnecessary) transpositions
+
         outcomes = np.array(outcomes)
         if len(outcomes.shape) < 2:
             outcomes = outcomes.reshape((1, outcomes.shape[0]))
@@ -820,7 +823,7 @@ class RLModel():
                                  " = {0}, number of simulated subject = {1}".format(outcomes.shape[0], p_combinations.shape[0]))
 
         if len(outcomes.shape) > 1:
-            if params_from_fit:  # all of this section is terribly written and involves a million transpositions
+            if params_from_fit:
                 outcomes = outcomes.T
             if not (outcomes.shape[0] == p_combinations.shape[0] or outcomes.shape[1] == p_combinations.shape[0]):
                 raise ValueError("Number of outcome lists provided does not match number of subjects")
@@ -990,17 +993,35 @@ class RLModel():
 
                     fig, axarr = plt.subplots(self.n_runs, 1, figsize=(8, 1.5 * self.n_runs))
 
-                    for i in range(self.n_runs):
+                    if self.n_runs > 1:
 
-                        index = n * self.n_runs + i
+                        for i in range(self.n_runs):
 
-                        axarr[i].plot(value.T[index], label='Model')
-                        axarr[i].plot(self.responses[index], label='Data')
+                            index = n * self.n_runs + i
+                            axarr[i].plot(value.T[index], label='Model')
+                            if response_format == 'continuous':
+                                axarr[i].plot(self.responses[index], label='Data')
+                            elif response_format == 'discrete':
+                                axarr[i].scatter(range(len(self.responses[index])), self.responses[index], label='Data')
 
-                        axarr[i].legend(frameon=True)
+                            axarr[i].legend(frameon=True)
 
-                    axarr[0].set_title("Subject {0}".format(sub), fontweight=fontweight)
-                    axarr[self.n_runs-1].set_xlabel("Trial")
+                            axarr[0].set_title("Subject {0}".format(sub), fontweight=fontweight)
+                            axarr[self.n_runs - 1].set_xlabel("Trial")
+
+                    else:
+
+                        index = n * self.n_runs
+                        axarr.plot(value.T[index], label='Model')
+                        if response_format == 'continuous':
+                            axarr.plot(self.responses[index], label='Data')
+                        elif response_format == 'discrete':
+                            axarr.scatter(range(len(self.responses[index])), self.responses[index], label='Data')
+
+                        axarr.legend(frameon=True)
+
+                        axarr.set_title("Subject {0}".format(sub), fontweight=fontweight)
+                        axarr.set_xlabel("Trial")
 
                     plt.tight_layout()
 
@@ -1065,6 +1086,7 @@ class RLModel():
             ax.plot(eq_line_range, eq_line_range, linestyle='--', color='black')
             ax.set_xlabel('Simulated {0}'.format(p), fontweight=fontweight)
             ax.set_ylabel('Estimated {0}'.format(p), fontweight=fontweight)
+            print len(self.parameter_table)
             ax.set_title('Parameter {0} correlations, '
                          'R2 = {1}'.format(p, np.round(r2(self.parameter_table[p.replace('mean_', '') + '_sim'],
                                                           self.parameter_table[p]), 2)), fontweight=fontweight)
@@ -1081,14 +1103,21 @@ class RLModel():
 
         ## SIMULATED-POSTERIOR CORRELATIONS
         if len(self.parameter_table) > 1:
-            se_cor = np.corrcoef(p_values, p_values_sim)[n_p_free:, :n_p_free]
-            fig, ax = plt.subplots(figsize=(n_p_free * 2, n_p_free * 1.8))
-            cmap = sns.diverging_palette(220, 10, as_cmap=True)
-            sns.heatmap(se_cor, cmap=cmap, square=True, linewidths=.5, xticklabels=fit_params,
-                        yticklabels=fit_params, annot=True)  # order might not work here
-            ax.set_xlabel('Simulated', fontweight=fontweight)
-            ax.set_ylabel('True', fontweight=fontweight)
-            ax.set_title("Simulated-Posterior correlations", fontweight=fontweight)
+            if np.sum(np.diff(p_values_sim)) == 0:
+                warnings.warn("Parameter values used across simulations are identical, unable to calculate "
+                              "correlations between simulated and estimated parameter values. Try providing a "
+                              "range of parameter values when simulating.")
+                se_cor = None
+            else:
+                se_cor = np.corrcoef(p_values, p_values_sim)[n_p_free:, :n_p_free]
+                fig, ax = plt.subplots(figsize=(n_p_free * 2, n_p_free * 1.8))
+                cmap = sns.diverging_palette(220, 10, as_cmap=True)
+                print se_cor
+                sns.heatmap(se_cor, cmap=cmap, square=True, linewidths=.5, xticklabels=fit_params,
+                            yticklabels=fit_params, annot=True)  # order might not work here
+                ax.set_xlabel('Simulated', fontweight=fontweight)
+                ax.set_ylabel('True', fontweight=fontweight)
+                ax.set_title("Simulated-Posterior correlations", fontweight=fontweight)
 
             ## POSTERIOR CORRELATIONS
             ee_cor = np.corrcoef(p_values, p_values)[n_p_free:, :n_p_free]

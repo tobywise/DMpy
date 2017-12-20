@@ -2,7 +2,7 @@ from distutils.core import setup
 
 setup(
     name='DMpy',
-    version='0.0.1',
+    version='0.1',
     packages=['DMpy'],
     url='',
     license='',

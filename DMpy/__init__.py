@@ -1,1 +1,1 @@
-from DMpy.model import RLModel, Parameter
+from DMpy.model import DMModel, Parameter
