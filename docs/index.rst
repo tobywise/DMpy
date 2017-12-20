@@ -11,19 +11,9 @@ Contents:
 .. toctree::
    :maxdepth: 2
 
-   index
    simulation
    model_fitting
    model_fitting_errors
    model_specification
    api
-
-
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
 
