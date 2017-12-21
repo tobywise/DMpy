@@ -339,7 +339,6 @@ def simulated_responses(simulated, outcomes, row_names, runs, out_file, learning
     Turns output of simulation into response file
     """
     n_subs = len(row_names)
-    print n_subs
 
     if len(simulated.shape) > 1:
         if simulated.shape[1] == n_subs:
@@ -364,7 +363,6 @@ def simulated_responses(simulated, outcomes, row_names, runs, out_file, learning
             for k, v in other_columns.iteritems():
                 df_dict[k] = v
 
-    #print df_dict
     df = pd.DataFrame(df_dict)
 
     # add parameter columns
@@ -459,9 +457,6 @@ def model_check(model_function, parameters):
 
 
 def r2(true, predicted):
-
-    print true
-    print predicted
 
     if true.shape != true.shape:
         try:

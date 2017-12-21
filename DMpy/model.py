@@ -743,7 +743,6 @@ class DMModel():
 
         else: # get pairs of parameters
             pairs = []
-            print p_values
             if not all(len(i) == len(p_values[0]) for i in p_values):
                 raise ValueError("Each parameter should have the same number of values")
             else:
@@ -1069,7 +1068,7 @@ class DMModel():
         fontweight = 'normal'
 
         # SCATTER PLOTS - CORRELATIONS
-        f, axarr = plt.subplots(1, n_p_free, figsize=(3 * n_p_free, 3.5))
+        f, axarr = plt.subplots(1, n_p_free, figsize=(4 * n_p_free, 4))
         for n, p in enumerate(fit_params):  # this code could all be made far more efficient
             if p.replace('mean_', '') + '_sim' not in self.sims.columns:
                 raise ValueError("Simulated values for parameter {0} not found in response file".format(p))
@@ -1086,7 +1085,6 @@ class DMModel():
             ax.plot(eq_line_range, eq_line_range, linestyle='--', color='black')
             ax.set_xlabel('Simulated {0}'.format(p), fontweight=fontweight)
             ax.set_ylabel('Estimated {0}'.format(p), fontweight=fontweight)
-            print len(self.parameter_table)
             ax.set_title('Parameter {0} correlations, '
                          'R2 = {1}'.format(p, np.round(r2(self.parameter_table[p.replace('mean_', '') + '_sim'],
                                                           self.parameter_table[p]), 2)), fontweight=fontweight)
@@ -1110,9 +1108,8 @@ class DMModel():
                 se_cor = None
             else:
                 se_cor = np.corrcoef(p_values, p_values_sim)[n_p_free:, :n_p_free]
-                fig, ax = plt.subplots(figsize=(n_p_free * 2, n_p_free * 1.8))
+                fig, ax = plt.subplots(figsize=(n_p_free * 3, n_p_free * 2.5))
                 cmap = sns.diverging_palette(220, 10, as_cmap=True)
-                print se_cor
                 sns.heatmap(se_cor, cmap=cmap, square=True, linewidths=.5, xticklabels=fit_params,
                             yticklabels=fit_params, annot=True)  # order might not work here
                 ax.set_xlabel('Simulated', fontweight=fontweight)
@@ -1121,7 +1118,7 @@ class DMModel():
 
             ## POSTERIOR CORRELATIONS
             ee_cor = np.corrcoef(p_values, p_values)[n_p_free:, :n_p_free]
-            fig, ax = plt.subplots(figsize=(n_p_free * 2, n_p_free * 1.8))
+            fig, ax = plt.subplots(figsize=(n_p_free * 3, n_p_free * 2.5))
             cmap = sns.diverging_palette(220, 10, as_cmap=True)
             sns.heatmap(ee_cor, cmap=cmap, square=True, linewidths=.5, xticklabels=fit_params,
                         yticklabels=fit_params, annot=True)  # order might not work here

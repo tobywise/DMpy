@@ -124,6 +124,8 @@ We can see from the plots that it doesn't look good. The a parameter is estimate
 
 However, the correlation between simulated and estimated parameters is not always the most appropriate way to judge recovery success, as it is not affected by any bias in the estimated parameter values. For this reason, the correlation plot also provides a line of equality (the dashed black line on the plots) and indicates the R2 value.
 
+Parameter recovery tests can be re-run at any time after fitting a model to simulated data by calling the ``recovery()`` method of the model instance.
+
 
 Simulating noisy data
 ---------------------
