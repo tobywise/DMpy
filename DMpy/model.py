@@ -866,7 +866,6 @@ class DMModel():
         outcomes = outcomes.eval()
         outcomes = outcomes.T  # transpose outcomes back - this code could do with reworking to keep orientation consistent
 
-
         if not len(value):
             value = [value]
             _value = [_value]
@@ -976,9 +975,13 @@ class DMModel():
 
             # plot other estimated values
             for i in range(1, len(eval_value)):
-                axarr[i].plot(eval_value[i])
-                axarr[i].set_xlim(0, len(eval_value[i]))
-                axarr[i].set_title(return_names[i], fontweight=fontweight)
+                plot_values = np.array(eval_value[i])
+                if len(plot_values.shape) < 2:
+                    plot_values = plot_values.reshape((plot_values.shape[0], 1))
+                for n in range(0, plot_values.shape[1]):
+                    axarr[i].plot(plot_values[:, n], c=pal[n])
+                    axarr[i].set_xlim(0, len(plot_values))
+                    axarr[i].set_title(return_names[i], fontweight=fontweight)
 
             plt.tight_layout()
 

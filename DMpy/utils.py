@@ -7,8 +7,10 @@ import inspect
 import re
 import pandas as pd
 import sys
+import os
 from io import BytesIO as StringIO
 import contextlib
+import urllib2
 
 def get_transforms(bounded_parameter):
 
@@ -484,3 +486,11 @@ def log_likelihood(true, predicted):
 
     return (np.log(predicted[true.nonzero()]).sum() +
      np.log(1 - predicted[(1 - true).nonzero()]).sum())
+
+
+def load_example_outcomes():
+
+    file = urllib2.urlopen(
+        'https://raw.githubusercontent.com/tobywise/DMpy/master/docs/notebooks/examples/example_outcomes.txt')
+
+    return np.loadtxt(file)
