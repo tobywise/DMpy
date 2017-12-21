@@ -38,7 +38,7 @@ The first argument given to DMModel is the learning model function. This can eit
 
 
 Model fitting
---------------
+-------------
 
 DMpy provides a range of methods for model fitting, based on the functions provided by PyMC3.
 
@@ -71,6 +71,11 @@ Where :math:`A` is the action action predicted by the model on trial :math:`t` a
 
 ..note::The first time the fitting procedure is run it can be quite slow due to Theano having to set up various things.
 
+The ``fit()`` method takes additional arguments that can be used to alter how the model fitting is performed. The ``fit_kwargs`` argument takes a dictionary of argument names and values to be supplied to the underlying PyMC3 variational fitting function used for variational inference (http://docs.pymc.io/api/inference.html#pymc3.variational.inference.fit) while the ``sample_kwargs`` argument takes a dictionary of keyword arguments to be supplied to PyMC3's sampling function for MCMC sampling (http://docs.pymc.io/api/inference.html#pymc3.sampling.sample).
+
+Specific subjects can be easily excluded from fitting by supplying their ID (as given in the response file) to the ``exclude`` argument. Multiple subjects can be excluded by providing a list of subject IDs.
+
+
 Hierarchical model fitting
 --------------------------
 
@@ -81,6 +86,8 @@ Fitting output
 --------------
 
 Once the model has been fit, a table of estimated parameter values will be provided. This will give estimates of each free parameter in the model for each subject. If variational or MCMC was chosen as the fitting method, the mean and standard deviation of the posterior distribution will be given. This table is stored in the ``parameter_table`` attribute of the model instance.
+
+If either variational or MCMC fitting methods are used and the ``plot`` argument is set to true, DMpy will also produce trace plots to illustrate the posterior distributions of each estimated parameter.
 
 
 Multiple runs per subject
@@ -94,7 +101,7 @@ It is also possible to use the "Run" column to fit models for tasks where behavi
 Parameter starting values
 -------------------------
 
-Some quantities used by the model will need to have a starting value provided (for example the estimated value of a stimulus), even though this is not necessarily of interest. This can be acheived by simply setting the parameter to the desired starting value using the mean argument of the Parameter class. An advantage of this is that it is also possible to estimate the best fitting starting value by providing a distribution rather than a fixed point as the starting value.
+Some quantities used by the model will need to have a starting value provided (for example the estimated value of a stimulus), even though this is not necessarily of interest. This can be achieved by simply setting the parameter to the desired starting value using the mean argument of the Parameter class. An advantage of this is that it is also possible to estimate the best fitting starting value by providing a distribution rather than a fixed point as the starting value.
 
 
 Debugging errors during model fitting

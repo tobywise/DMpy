@@ -4,7 +4,7 @@ DMpy examples
 Contents:
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
 
-   notebooks
+   notebooks/hierarchical_model_fitting_demo.ipynb
 

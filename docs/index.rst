@@ -16,4 +16,6 @@ Contents:
    model_specification
    examples
    api
+   api/DMpy
+   api/modules
 
