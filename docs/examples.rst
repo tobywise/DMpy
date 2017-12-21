@@ -6,5 +6,5 @@ Contents:
 .. toctree::
    :maxdepth: 1
 
-   notebooks/
+   notebooks/examples/hierarchical_model_fitting_demo.ipynb
 
