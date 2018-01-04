@@ -61,9 +61,9 @@ In order for this to work properly, it's advisable to simulate across a range of
 This is an example of parameter recovery with a Rescorla-Wagner model, where we're assessing our ability to recover the alpha parameter. To simulate across a range of values of alpha, we provide a range from 0.1 to 0.9 in steps of 0.1 using ``np.arange(0.1, 1, 0.1)``.
 
     >>> sim_rw = model_rw.simulate(outcomes, n_subjects=50,
-                                   response_file='parameter_recovery.csv',
-                                   learning_parameters={'value': 0.5, 'alpha0': np.arange(0.1, 1, 0.1)},
-                                   observation_parameters={'b':3})
+    >>>                            response_file='parameter_recovery.csv',
+    >>>                            learning_parameters={'value': 0.5, 'alpha0': np.arange(0.1, 1, 0.1)},
+    >>>                            observation_parameters={'b':3})
     Finished simulating
     Saving simulated responses to parameter_recovery.csv
 

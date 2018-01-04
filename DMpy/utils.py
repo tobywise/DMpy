@@ -23,8 +23,8 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
     """
     Turns parameters into pymc3 parameter distributions for model fitting
     """
-    if hasattr(p, '__pymc_kwargs'):
-        kwargs = p.__pymc_kwargs
+    if hasattr(p, '_Parameter__pymc_kwargs'):
+        kwargs = p._Parameter__pymc_kwargs
     else:
         kwargs = {}
 
@@ -466,9 +466,6 @@ def r2(true, predicted):
                                  " predicted = {1}".format(true.shape, predicted.shape))
         except:
             raise AttributeError("True and predicted arrays should have the same shape")
-
-    if len(true) < 2 or len(predicted) < 2:
-        r2 = np.nan
 
     else:
         sst = T.power(true - true.mean(), 2).sum()

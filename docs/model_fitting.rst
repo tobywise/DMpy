@@ -71,7 +71,7 @@ Where :math:`A` is the action action predicted by the model on trial :math:`t` a
 
 ..note::The first time the fitting procedure is run it can be quite slow due to Theano having to set up various things.
 
-The ``fit()`` method takes additional arguments that can be used to alter how the model fitting is performed. The ``fit_kwargs`` argument takes a dictionary of argument names and values to be supplied to the underlying PyMC3 variational fitting function used for variational inference (http://docs.pymc.io/api/inference.html#pymc3.variational.inference.fit) while the ``sample_kwargs`` argument takes a dictionary of keyword arguments to be supplied to PyMC3's sampling function for MCMC sampling (http://docs.pymc.io/api/inference.html#pymc3.sampling.sample).
+The ``fit()`` method takes additional arguments that can be used to alter how the model fitting is performed. The ``fit_kwargs`` argument takes a dictionary of argument names and values to be supplied to the underlying [PyMC3 variational fitting function used for variational inference](http://docs.pymc.io/api/inference.html#pymc3.variational.inference.fit) or the [PyMC3 MAP fitting function for MAP and MLE estimation](http://docs.pymc.io/notebooks/getting_started.html#Maximum-a-posteriori-methods) while the ``sample_kwargs`` argument takes a dictionary of keyword arguments to be supplied to [PyMC3's sampling function for MCMC sampling](http://docs.pymc.io/api/inference.html#pymc3.sampling.sample).
 
 Specific subjects can be easily excluded from fitting by supplying their ID (as given in the response file) to the ``exclude`` argument. Multiple subjects can be excluded by providing a list of subject IDs.
 
@@ -145,4 +145,8 @@ Alternatively, it may be that the model produces invalid values when its paramet
 
 The best way to avoid such errors is to ensure that priors over free parameters are specified properly. For example, if a parameter value of less than zero would lead to the model producing strange results, it is best to set a lower bound of zero for the parameter, using ``lower_bound=0`` when defining the parameter using the ``Parameter`` class.
 
-It can also be useful to test whether certain values will lead to errors, rather than finding this out some way through fitting. For this purpose it is possible to pass a test value to the parameter instance using the ``testval`` argument (this is a keyword argument that gets passed to the underlying PyMC3 distribution class, for more information see the PyMC3 documentation). This will begin fitting at this parameter value, allowing errors to be detected at the start of fitting.
+It can also be useful to test whether certain values will lead to errors, rather than finding this out some way through fitting. For this purpose it is possible to pass a test value to the parameter instance using the ``testval`` argument (this is a keyword argument that gets passed to the underlying PyMC3 distribution class, for more information see the PyMC3 documentation). This will begin fitting at this parameter value, allowing errors to be detected at the start of fitting. For example, if you suspected that negative values of an ``alpha`` parameter was causing fitting to fail, you may wish to initialise the parameter as follows, so that model fitting will begin at a negative ``alpha`` value and make it clear whether this is indeed the case.
+
+.. code-block:: python
+
+        alpha = Parameter('alpha', 'uniform', lower_bound=0, upper_bound=1, testval=-1)

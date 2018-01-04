@@ -20,8 +20,9 @@ from DMpy.utils import generate_pymc_distribution, n_returns, function_wrapper, 
 sns.set_style("white")
 sns.set_palette("Set1")
 
+# TODO change simulated results to an object? I.e. create a simulation class and use this to store results and do things with them
+# TODO scale points in parameter recovery plots by SD if estimated using variational/MCMC
 # TODO Check re-entered parameters are given as dynamic and non-reentered ones aren't - getting dynamic setting wrong is too easy and causes problems that aren't easy to spot/solve
-# TODO non-reentered value estimates cause problems
 # TODO change recovery to a method of the model class which is called manually after fitting
 
 # TODO multiple outcome arrays (sequences are entered as a list so should be possible) - would allow for interesting things to be added to the model (e.g. other stimuli)
@@ -312,8 +313,8 @@ class DMModel():
             self.__n_obs_dynamic = 0
 
 
-    def fit(self, responses, outcomes=None, fit_method='MLE', hierarchical=False, plot=True, fit_stats=False, recovery=True,
-            exclude=None, fit_kwargs=None, sample_kwargs=None, logp_method='ll'):
+    def fit(self, responses, outcomes=None, fit_method='MLE', hierarchical=False, plot=True, fit_stats=False, recovery=False,
+            exclude=None, fit_kwargs=None, sample_kwargs=None, logp_method='ll', suppress_table=False):
 
         """
         General fitting method.
@@ -335,6 +336,10 @@ class DMModel():
             fit_kwargs: Dictionary of keyword arguments passed to underlying MLE, MAP and variational fitting functions. See
             PyMC3 documentation for more details (http://docs.pymc.io/notebooks/getting_started.html)
             sample_kwargs: Dictionary of keyword arguments passed to underlying variational and MCMC sampling functions.
+            logp_method: Function to minimise when fitting to data, currently accepts either 'll' for log likelihood or
+                         'r2' for R-squared
+            suppress_table: If set to true, parameter table will not be printed when model fitting is complete.
+
 
         """
 
@@ -361,18 +366,20 @@ class DMModel():
             sample_kwargs = {}
 
         if fit_method in ['MLE', 'mle']:
-            self._fit_MLE(plot=plot, recovery=recovery, logp_method=logp_method, **fit_kwargs)
+            self._fit_MLE(plot=plot, recovery=recovery, suppress_table=suppress_table, logp_method=logp_method,
+                          **fit_kwargs)
             
         elif fit_method in ['MAP', 'map']:
-            self._fit_MAP(plot=plot, recovery=recovery, logp_method=logp_method, **fit_kwargs)
+            self._fit_MAP(plot=plot, recovery=recovery, suppress_table=suppress_table, logp_method=logp_method,
+                          **fit_kwargs)
 
         elif fit_method in ['variational', 'Variational']:
-            self._fit_variational(plot=plot, hierarchical=hierarchical, recovery=recovery, logp_method=logp_method,
-                                  fit_stats=fit_stats, fit_kwargs=fit_kwargs, sample_kwargs=sample_kwargs)
+            self._fit_variational(plot=plot, hierarchical=hierarchical, recovery=recovery, suppress_table=suppress_table,
+                                  logp_method=logp_method, fit_stats=fit_stats, fit_kwargs=fit_kwargs, sample_kwargs=sample_kwargs)
 
         elif fit_method in ['MCMC', 'mcmc']:
-            self._fit_MCMC(plot=plot, hierarchical=hierarchical, recovery=recovery, logp_method=logp_method,
-                           fit_stats=fit_stats, **sample_kwargs)
+            self._fit_MCMC(plot=plot, hierarchical=hierarchical, recovery=recovery, suppress_table=suppress_table,
+                           logp_method=logp_method, fit_stats=fit_stats, **sample_kwargs)
 
         else:
             raise ValueError("Invalid fitting method provided ({0}). Fit method should be one of {1}"
@@ -380,7 +387,8 @@ class DMModel():
 
 
 
-    def _fit_MCMC(self, hierarchical=False, plot=True, fit_stats=False, recovery=True, logp_method='ll', **kwargs):
+    def _fit_MCMC(self, hierarchical=False, plot=True, fit_stats=False, recovery=True, suppress_table=False,
+                  logp_method='ll', **kwargs):
 
         sns.set_palette("deep")
 
@@ -423,7 +431,9 @@ class DMModel():
         print "\nPARAMETER ESTIMATES\n"
 
         self.parameter_table = parameter_table(pm.df_summary(self.trace), self.subjects)
-        print self.parameter_table
+
+        if not suppress_table:
+            print self.parameter_table
 
         if recovery and self.sims is not None:
             self.recovery_correlations = self.recovery()
@@ -445,8 +455,8 @@ class DMModel():
         print "Finished model fitting in {0} seconds".format(end - start)
 
 
-    def _fit_variational(self, plot=True, hierarchical=True, fit_stats=False, recovery=True, logp_method='ll',
-                         fit_kwargs=None, sample_kwargs=None):
+    def _fit_variational(self, plot=True, hierarchical=True, fit_stats=False, recovery=True, suppress_table=False,
+                         logp_method='ll', fit_kwargs=None, sample_kwargs=None):
 
         sns.set_palette("deep")
 
@@ -504,7 +514,9 @@ class DMModel():
         print "\nPARAMETER ESTIMATES\n"
 
         self.parameter_table = parameter_table(pm.df_summary(self.trace), self.subjects)
-        print self.parameter_table
+
+        if not suppress_table:
+            print self.parameter_table
 
         if recovery and self.sims is not None:
             self.recovery_correlations = self.recovery()
@@ -523,7 +535,7 @@ class DMModel():
         print "Finished model fitting in {0} seconds".format(end - start)
 
 
-    def _fit_MAP(self, plot=True, mle=False, recovery=True, logp_method='ll', **kwargs):
+    def _fit_MAP(self, plot=True, mle=False, recovery=True, suppress_table=False, logp_method='ll', **kwargs):
 
 
         if mle:
@@ -602,7 +614,8 @@ class DMModel():
         if recovery and self.sims is not None:
             self.recovery_correlations = self.recovery()
 
-        print self.parameter_table
+        if not suppress_table:
+            print self.parameter_table
 
         self.log_likelihood, self.BIC, self.AIC = model_fit(rl.logp, self.map_estimate, rl.vars, self.outcomes)
 
@@ -612,9 +625,9 @@ class DMModel():
         print "Finished model fitting in {0} seconds".format(end-start)
 
 
-    def _fit_MLE(self, plot=True, recovery=True, logp_method='ll', **kwargs):
+    def _fit_MLE(self, plot=True, recovery=True, suppress_table=False, logp_method='ll', **kwargs):
 
-        self._fit_MAP(plot=plot, mle=True, recovery=recovery,
+        self._fit_MAP(plot=plot, mle=True, recovery=recovery, suppress_table=suppress_table,
                       logp_method=logp_method, **kwargs)
 
 
@@ -1002,9 +1015,10 @@ class DMModel():
                             index = n * self.n_runs + i
                             axarr[i].plot(value.T[index], label='Model')
                             if response_format == 'continuous':
-                                axarr[i].plot(self.responses[index], label='Data')
+                                axarr[i].plot(self.responses[index], label='Data', color='#3d3d3d')
                             elif response_format == 'discrete':
-                                axarr[i].scatter(range(len(self.responses[index])), self.responses[index], label='Data')
+                                axarr[i].scatter(range(len(self.responses[index])), self.responses[index],
+                                                 label='Data', color='#3d3d3d')
 
                             axarr[i].legend(frameon=True)
 
@@ -1016,9 +1030,10 @@ class DMModel():
                         index = n * self.n_runs
                         axarr.plot(value.T[index], label='Model')
                         if response_format == 'continuous':
-                            axarr.plot(self.responses[index], label='Data')
+                            axarr.plot(self.responses[index], label='Data', color='#3d3d3d')
                         elif response_format == 'discrete':
-                            axarr.scatter(range(len(self.responses[index])), self.responses[index], label='Data')
+                            axarr.scatter(range(len(self.responses[index])), self.responses[index],
+                                          label='Data', color='#3d3d3d')
 
                         axarr.legend(frameon=True)
 
