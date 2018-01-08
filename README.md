@@ -1,6 +1,8 @@
 # DMpy
 
-DMpy is a package for developing and fitting computational models of behaviour in decision making tasks.
+DMpy is a Python package for developing and fitting computational models of behaviour in decision making tasks.
+
+Documentation can be found at http://dmpy.readthedocs.io/en/latest/
 
 Its aim is to be transparent and modular, allowing simple coding of both learning and observation models, along with
 straightforward model fitting.

@@ -236,7 +236,7 @@ class _PyMCModel(Continuous):
             logp = log_likelihood(self.responses, prob)
 
         elif self.logp_method == 'r2':
-            logp = r2(self.responses, prob) * 10000
+            logp = r2(self.responses, prob) * 100000000
 
         else:
             raise ValueError("Invalid likelihood function specified")
