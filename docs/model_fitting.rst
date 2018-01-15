@@ -71,7 +71,12 @@ Where :math:`A` is the action action predicted by the model on trial :math:`t` a
 
 ..note::The first time the fitting procedure is run it can be quite slow due to Theano having to set up various things.
 
-The ``fit()`` method takes additional arguments that can be used to alter how the model fitting is performed. The ``fit_kwargs`` argument takes a dictionary of argument names and values to be supplied to the underlying [PyMC3 variational fitting function used for variational inference](http://docs.pymc.io/api/inference.html#pymc3.variational.inference.fit) or the `PyMC3 MAP fitting function for MAP and MLE estimation<http://docs.pymc.io/notebooks/getting_started.html#Maximum-a-posteriori-methods>`_ while the ``sample_kwargs`` argument takes a dictionary of keyword arguments to be supplied to `PyMC3's sampling function for MCMC sampling<http://docs.pymc.io/api/inference.html#pymc3.sampling.sample>`_.
+The ``fit()`` method takes additional arguments that can be used to alter how the model fitting is performed. The ``fit_kwargs`` argument takes a dictionary of argument names and values to be supplied to the underlying `PyMC3 variational fitting function used for variational inference`_ or the `PyMC3 MAP fitting function for MAP and MLE estimation`_ while the ``sample_kwargs`` argument takes a dictionary of keyword arguments to be supplied to `PyMC3's sampling function for MCMC sampling`_.
+
+.. _Variational fitting: http://docs.pymc.io/api/inference.html#pymc3.variational.inference.fit
+.. _MAP and MLE fitting: http://docs.pymc.io/notebooks/getting_started.html#Maximum-a-posteriori-methods
+.. _MCMC: http://docs.pymc.io/api/inference.html#pymc3.sampling.sample
+
 
 Specific subjects can be easily excluded from fitting by supplying their ID (as given in the response file) to the ``exclude`` argument. Multiple subjects can be excluded by providing a list of subject IDs.
 

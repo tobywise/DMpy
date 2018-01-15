@@ -17,6 +17,8 @@ from itertools import product
 from DMpy.utils import generate_pymc_distribution, n_returns, function_wrapper, load_data, load_outcomes, \
     parameter_table, model_fit, generate_choices2, n_obs_dynamic, simulated_responses, r2, log_likelihood
 
+theano.config.compute_test_value = "off"
+
 sns.set_style("white")
 sns.set_palette("Set1")
 
@@ -107,7 +109,7 @@ class _PyMCModel(Continuous):
     """
 
     def __init__(self, learning_models, learning_parameters, observation_model, observation_parameters, responses, hierarchical,
-                 subjects, n_runs, mle=False, outcomes=None, logp_method='ll', *args, **kwargs):
+                 n_subjects, n_runs, mle=False, outcomes=None, logp_method='ll', *args, **kwargs):
         super(_PyMCModel, self).__init__(*args, **kwargs)
 
         self.fit_complete = False
@@ -117,24 +119,16 @@ class _PyMCModel(Continuous):
         self.learning_parameters = learning_parameters
         self.observation_parameters = observation_parameters[0]
         self.__observation_dynamic_inputs = observation_parameters[1]
+        self.n_subjects = n_subjects
+        self.responses = responses
         self.outcomes = outcomes
-        self.subjects = subjects
-        self.n_subjects = len(self.subjects)
         self.n_runs = n_runs
         self.logp_method = logp_method
 
         if len(np.unique(n_runs)) != 1:
             raise ValueError("All subjects must have the same number of runs")
 
-        self.n_runs = np.min(self.n_runs)
-
-        self.responses = responses.astype(float)
-        if self.responses.shape[0] == 1:
-            self.responses = self.responses[0]
-
-        if responses.shape[1] != outcomes.shape[0]:
-            raise ValueError("Responses ({0}) and outcomes ({1}) have unequal lengths".format(responses.shape[1],
-                                                                                              len(outcomes)))
+        self.n_runs = self.n_runs.min()
 
         ## initialise parameters
         
@@ -148,12 +142,13 @@ class _PyMCModel(Continuous):
         self.__n_dynamic = len(self.dynamic_parameters)
         self.__n_learning_returns, _ = n_returns(self.learning_model)
 
-        x_shape = np.array(self.outcomes.shape)
+        x_shape = np.array(self.outcomes.eval().shape)
         self.time = theano.shared(np.tile(np.arange(0, x_shape[0]), (x_shape[1], 1)).T)
 
         self.responses = self.responses.T
         if self.responses.ndim == 1:
             self.responses = self.responses.reshape(self.responses.shape[0], 1)
+
 
     def get_value(self, x):
 
@@ -236,7 +231,7 @@ class _PyMCModel(Continuous):
             logp = log_likelihood(self.responses, prob)
 
         elif self.logp_method == 'r2':
-            logp = r2(self.responses, prob) * 100000000
+            logp = r2(self.responses, prob) * 10000
 
         else:
             raise ValueError("Invalid likelihood function specified")
@@ -258,17 +253,21 @@ class DMModel():
 
     """
 
-    def __init__(self, learning_model, learning_parameters, observation_model, observation_parameters, name=''):
+    def __init__(self, learning_model, learning_parameters, observation_model, observation_parameters, logp_method='ll',
+                 name=''):
         self.name = name
         self.learning_model = learning_model
         self.learning_parameters = learning_parameters
         self.observation_model = observation_model
         self.observation_parameters = observation_parameters
+        self.logp_method = logp_method
         self.__observation_dynamic_inputs = []
         self.trace = None
         self.simulated = []
+        self._simulate_function = None
         self._model = None
         self.fit_complete = False
+        self._fit_method = None
 
         self.__n_learning_returns, self.__learning_returns = n_returns(self.learning_model)
 
@@ -313,6 +312,45 @@ class DMModel():
             self.__n_obs_dynamic = 0
 
 
+        # create model
+        self._model_test = None
+
+
+    def _create_model(self, outcomes, responses, n_subjects, n_runs, mle=False):
+
+        """
+        Internally used method for generating PyMC3 model instance - allows model instance to be cached and reused
+
+        Args:
+            outcomes: Outcomes (theano shared variable)
+            responses: Responses (theano shared variable)
+            n_subjects: Number of subjects (theano shared variable)
+            n_runs: Number of runs per subject (theano shared variable)
+            mle: Specifies whether to use MLE estimation when fitting - if true, parameters are converted to uniform/flat
+
+        """
+
+        with pm.Model(theano_config={'compute_test_value': 'ignore'}) as model:
+
+            m = _PyMCModel('model', learning_models=(self.learning_model, self.__learning_model_initial),
+                          learning_parameters=self.learning_parameters,
+                          observation_model=self.observation_model,
+                          observation_parameters=[self.observation_parameters, self.__observation_dynamic_inputs],
+                          responses=self.responses, observed=self.outcomes, outcomes=self.outcomes,
+                          n_subjects=self.n_subjects, n_runs=self.n_runs, hierarchical=False, mle=mle,
+                          logp_method=self.logp_method)
+
+            self._DMpy_model = m
+
+            params = (m.distribution.learning_parameters, m.distribution.observation_parameters)
+            params = [i for j in params for i in j]
+            self.params = [p for p in params if p is not None]
+
+        self._model_test = model
+
+        print "Created model"
+
+
     def fit(self, responses, outcomes=None, fit_method='MLE', hierarchical=False, plot=True, fit_stats=False, recovery=False,
             exclude=None, fit_kwargs=None, sample_kwargs=None, logp_method='ll', suppress_table=False):
 
@@ -346,32 +384,69 @@ class DMModel():
         allowed_methods = ['MLE', 'MAP', 'Variational', 'MCMC', 'mle', 'map', 'variational', 'mcmc']
 
         # Load data
-        self.subjects, self.n_runs, self.responses, self.sims, self.loaded_outcomes = load_data(responses, exclude=exclude)
+        subjects, n_runs, responses, self.sims, loaded_outcomes = load_data(responses, exclude=exclude)
 
-        if outcomes is None and self.loaded_outcomes is None:
+        if outcomes is None and loaded_outcomes is None:
             raise ValueError("No outcomes provided. Please provide outcomes either as an array or as a column in "
                              "the response file")
 
-        if self.loaded_outcomes is not None:
-            self.outcomes = self.loaded_outcomes
+        responses = responses.astype(float)
+
+        if loaded_outcomes is not None:
+            outcomes = loaded_outcomes
         else:
-            self.outcomes = load_outcomes(outcomes)
+            outcomes = load_outcomes(outcomes)
 
-
-        self.n_subjects = len(self.subjects)
+        self.subjects = subjects
+        n_subjects = len(subjects)
 
         if fit_kwargs is None:
             fit_kwargs = {}
         if sample_kwargs is None:
             sample_kwargs = {}
 
+        self.logp_method = logp_method
+
+        # make sure outcomes and responses look nice
+
+        if responses.shape[0] == 1:
+            responses = responses[0]
+
+        if responses.shape[1] != outcomes.shape[0]:
+            raise ValueError("Responses ({0}) and outcomes ({1}) have unequal lengths".format(responses.shape[1],
+                                                                                              outcomes.shape[0]))
         if fit_method in ['MLE', 'mle']:
-            self._fit_MLE(plot=plot, recovery=recovery, suppress_table=suppress_table, logp_method=logp_method,
+            mle = True
+        else:
+            mle = False
+
+        if self._model_test is None or self._fit_method != fit_method.lower():
+
+            # create model if it doesn't exist or the fitting method has been changed
+            # turn outcomes and responses into shared variables
+
+            self.responses = theano.shared(responses)
+            self.outcomes = theano.shared(outcomes)
+            self.n_subjects = theano.shared(n_subjects)
+            self.n_runs = theano.shared(n_runs)
+            self._create_model(self.outcomes, self.responses, self.n_subjects, self.n_runs, mle=mle)
+
+        self.responses.set_value(responses)
+        self.outcomes.set_value(outcomes)
+        self.n_subjects.set_value(n_subjects)
+        self.n_runs.set_value(n_runs)
+
+        self._fit_method = fit_method.lower()
+
+        # run fitting method
+
+        if fit_method in ['MLE', 'mle']:
+            # MAP method is used for MLE - only difference is the absence of priors when setting up parameters
+            self._fit_MAP(plot=plot, recovery=recovery, suppress_table=suppress_table, mle=True,
                           **fit_kwargs)
             
         elif fit_method in ['MAP', 'map']:
-            self._fit_MAP(plot=plot, recovery=recovery, suppress_table=suppress_table, logp_method=logp_method,
-                          **fit_kwargs)
+            self._fit_MAP(plot=plot, recovery=recovery, suppress_table=suppress_table, **fit_kwargs)
 
         elif fit_method in ['variational', 'Variational']:
             self._fit_variational(plot=plot, hierarchical=hierarchical, recovery=recovery, suppress_table=suppress_table,
@@ -426,7 +501,7 @@ class DMModel():
                 traceplot(self.trace)
 
         self._model = rl
-        self.fit_values = pm.df_summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
+        self.fit_values = pm.df_summary(self.trace, varow_names=self.trace.varow_names)['mean'].to_dict()
 
         print "\nPARAMETER ESTIMATES\n"
 
@@ -496,7 +571,7 @@ class DMModel():
             if plot:
                 traceplot(self.trace)
 
-        self.fit_values = pm.df_summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
+        self.fit_values = pm.df_summary(self.trace, varow_names=self.trace.varow_names)['mean'].to_dict()
         self.fit_complete = True
         self._model = rl
 
@@ -535,7 +610,7 @@ class DMModel():
         print "Finished model fitting in {0} seconds".format(end - start)
 
 
-    def _fit_MAP(self, plot=True, mle=False, recovery=True, suppress_table=False, logp_method='ll', **kwargs):
+    def _fit_MAP(self, plot=True, mle=False, recovery=True, suppress_table=False, **kwargs):
 
 
         if mle:
@@ -553,24 +628,12 @@ class DMModel():
         # assert len(outcomes) == len(observed), "Outcome and observed data are " \
         #                                        "different lengths ({0} and ({1}".format(len(outcomes), len(observed))
 
-        print "Performing model fitting for {0} subjects".format(self.n_subjects)
+        print "Performing model fitting for {0} subjects".format(self.n_subjects.eval())
 
         self._model = {}
         self.map_estimate = {}
 
-        with pm.Model() as rl:
-
-            m = _PyMCModel('rl', learning_models=(self.learning_model, self.__learning_model_initial),
-                          learning_parameters=self.learning_parameters,
-                          observation_model=self.observation_model,
-                          observation_parameters=[self.observation_parameters, self.__observation_dynamic_inputs],
-                          responses=self.responses, observed=self.outcomes, outcomes=self.outcomes,
-                          subjects=self.subjects, n_runs=self.n_runs, hierarchical=False, mle=mle,
-                          logp_method=logp_method)
-
-            params = (m.distribution.learning_parameters, m.distribution.observation_parameters)
-            params = [i for j in params for i in j]
-            params = [p for p in params if p is not None]
+        with self._model_test:
 
             try:
                 self.map_estimate = find_MAP(**kwargs)
@@ -580,17 +643,13 @@ class DMModel():
 
             self.raw_fit_values = self.map_estimate
 
-            self._model = rl
-
-            self._DMpy_model = m
-
 
         self.fit_complete = True
         # need to backwards transform these values
 
         untransformed_params = {}
 
-        for p in params:
+        for p in self.params:
             for m in self.raw_fit_values.keys():
                 n = re.search('.+(?=_.+__)', m)
                 if (n and n.group() == p.name) or m == p.name:
@@ -603,7 +662,7 @@ class DMModel():
 
         print "\nPARAMETER ESTIMATES\n"
 
-        if self.n_subjects > 1:
+        if self.n_subjects.eval() > 1:
             self.parameter_table = pd.DataFrame(self.fit_values)
             self.parameter_table['Subject'] = self.subjects
             self.parameter_table.sort_values('Subject')
@@ -617,19 +676,12 @@ class DMModel():
         if not suppress_table:
             print self.parameter_table
 
-        self.log_likelihood, self.BIC, self.AIC = model_fit(rl.logp, self.map_estimate, rl.vars, self.outcomes)
+        self.log_likelihood, self.BIC, self.AIC = model_fit(self._model_test.logp, self.map_estimate, self._model_test.vars, self.outcomes)
 
         self.DIC = None
         self.WAIC = None
         end = timer()
         print "Finished model fitting in {0} seconds".format(end-start)
-
-
-    def _fit_MLE(self, plot=True, recovery=True, suppress_table=False, logp_method='ll', **kwargs):
-
-        self._fit_MAP(plot=plot, mle=True, recovery=recovery, suppress_table=suppress_table,
-                      logp_method=logp_method, **kwargs)
-
 
     def tracePlot(self):
 
@@ -645,7 +697,7 @@ class DMModel():
     def simulate(self, outcomes=None, learning_parameters=None, observation_parameters=None, plot=False, responses=None,
                  plot_choices=False, output_value=False, plot_outcomes=True, output_file='', n_subjects=1,
                  plot_value=True, legend=False, combinations=False, runs_per_subject=1, palette='Blues',
-                 plot_against_true=False, response_format='continuous', noise=False, noise_mean=0, noise_sd=0.1):
+                 plot_against_true=False, response_format='continuous', noise_mean=0, noise_sd=0):
 
         """
         Args:
@@ -666,9 +718,8 @@ class DMModel():
             palette: Seaborn colour palette to use in plotting
             plot_against_true: If the model has been fit, produces a plot for each subject of their true responses against responses simulated using their best fitted parameter estimates
             response_format: The type of responses to be plotted (either 'continuous' or 'discrete'). If continuous, responses will be plotted as a line, if discrete they will be plotted as points. Default: 'continuous'
-            noise: Adds gaussian-distributed noise to the estimated value
-            noise_mean: If noise is true, sets the mean of the noise distribution (can be useful for adding a bias to subjects' responses)
-            noise_sd: If noise is true, sets the standard deviation of the noise distribution
+            noise_mean: Sets the mean of the noise distribution (can be useful for adding a bias to subjects' responses), default = 0
+            noise_sd: Sets the standard deviation of the noise distribution. Default = 0, increasing this will add noise.
 
         Returns:
             The results of the simulation, containing the parameters given to the learning model, the parameters given to the observation model, and the simulated data
@@ -676,41 +727,47 @@ class DMModel():
 
         """
 
-        if learning_parameters is not None:
-            self.sim_learning_parameters = OrderedDict(learning_parameters)
-        else:
-            self.sim_learning_parameters = OrderedDict()
+        # Check that we either have parameters provided or the model has been fit
 
-        if observation_parameters is not None:
-            self.sim_observation_parameters = OrderedDict(observation_parameters)
-        else:
-            self.sim_observation_parameters = OrderedDict()
-
-        n_subjects = n_subjects * runs_per_subject
-
-        sim_dynamic = []
-        sim_static = []
-        sim_observation = []
-        sim_observation_dynamic = []
-
-        if isinstance(outcomes, np.ndarray) or isinstance(outcomes, list):
-            outcomes = load_outcomes(outcomes)
-        elif outcomes is None:
-            outcomes = self.outcomes
-        else:
-            raise ValueError("Outcomes are not in the correct format")
-
-        if learning_parameters == None and observation_parameters == None and not self.fit_complete:
+        if learning_parameters == None and not self.fit_complete:
             raise ValueError("No parameter values provided and model has not been fit. Must explicitly "
-                             "provide parameter values for simulation")
+                             "provide parameter values for simulation or fit the model first")
 
-        elif learning_parameters == None and observation_parameters == None:
+
+        # Using user-defined parameter values & outcomes
+
+        if learning_parameters is not None:  # We're using user-specified parameter values
+
+            self.sim_learning_parameters = OrderedDict(learning_parameters)
+            params_from_fit = False
+
+            if observation_parameters is not None:
+                self.sim_observation_parameters = OrderedDict(observation_parameters)
+            else:
+                self.sim_observation_parameters = OrderedDict()
+
+            n_subjects = n_subjects * runs_per_subject
+
+            # check that outcomes are in the right format (i.e. ndarray or list)
+            if isinstance(outcomes, np.ndarray) or isinstance(outcomes, list):
+                outcomes = load_outcomes(outcomes)
+            else:
+                raise ValueError("Outcomes are not in the correct format")
+
+        # Using parameter estimates & outcomes from model fit
+
+        else:
+
+            self.sim_learning_parameters = OrderedDict()
+            params_from_fit = True  # use best values from model fitting if parameter values aren't provided
+
+            n_runs = self.n_runs.eval()
+            n_subjects = self.n_subjects.eval()
+            outcomes = self.outcomes.eval()
 
             self.sim_learning_parameters = OrderedDict()
             self.sim_observation_parameters = OrderedDict()
 
-            params_from_fit = True  # use best values from model fitting if parameter values aren't provided
-            n_subjects = self.n_subjects
             learning_parameter_names = [i.name for i in self.learning_parameters]
             if self.observation_parameters[0] is not None:
                 observation_parameter_names = [i.name for i in self.observation_parameters]
@@ -718,62 +775,92 @@ class DMModel():
                 observation_parameter_names = None
             for p, v in self.fit_values.iteritems():
                 if p in learning_parameter_names:
-                    self.sim_learning_parameters[p] = np.repeat(v, self.n_runs)
+                    self.sim_learning_parameters[p] = np.repeat(v, n_runs)
                 elif observation_parameter_names is not None and p in observation_parameter_names:
-                    self.sim_observation_parameters[p] = np.repeat(v, self.n_runs)
+                    self.sim_observation_parameters[p] = np.repeat(v, n_runs)
             for p in learning_parameter_names:
                 if p not in self.sim_learning_parameters.keys():
                     mean = [i.mean for i in self.learning_parameters if i.name == p]
-                    self.sim_learning_parameters[p] = np.repeat(mean, self.n_runs * self.n_subjects)
+                    self.sim_learning_parameters[p] = np.repeat(mean, n_runs * n_subjects)
             if observation_parameter_names is not None:
                 for p in observation_parameter_names:
                     if p not in self.sim_observation_parameters.keys():
                         mean = [i.mean for i in self.observation_parameters if i.name == p]
-                        self.sim_observation_parameters[p] = np.repeat(mean, self.n_runs * self.n_subjects)
+                        self.sim_observation_parameters[p] = np.repeat(mean, n_runs * n_subjects)
+
+        if not any([isinstance(i, list) and len(i) > 1 for i in learning_parameters.values()]):
+            single_parameter_values = True  # temporary(ish) solution for shape problem with single values
         else:
-            params_from_fit = False
+            single_parameter_values = False
 
-        # create parameter combinations
-        list_params = []  # list of parameters with multiple values, useful for stuff later on
 
-        for p, v in self.sim_learning_parameters.iteritems():  # convert any single values to list
-            if hasattr(v, '__len__'):
-                list_params.append(p)
-            else:
+        # Create parameter combinations
+
+        # First convert any single values to lists
+        for p, v in self.sim_learning_parameters.iteritems():
+            if not hasattr(v, '__len__'):
                 self.sim_learning_parameters[p] = [v]
 
-        for p, v in self.sim_observation_parameters.iteritems():  # convert any single values to list
-            if hasattr(v, '__len__'):
-                list_params.append(p)
-            else:
+        for p, v in self.sim_observation_parameters.iteritems():
+            if not hasattr(v, '__len__'):
                 self.sim_observation_parameters[p] = [v]
 
-        p_values = self.sim_learning_parameters.values() + self.sim_observation_parameters.values()
+        # combine learning and observation parameters into a single list - necessary for creating combinations/pairs
+        parameter_values = self.sim_learning_parameters.values() + self.sim_observation_parameters.values()
 
         if combinations:  # create combinations of parameters
-            p_combinations = np.array(list(product(*p_values))) # get product
+            p_combinations = np.array(list(product(*parameter_values))) # get product
             p_combinations = p_combinations.repeat(n_subjects, axis=0)  # repeat x n_subjects
 
         else: # get pairs of parameters
-            pairs = []
-            if not all(len(i) == len(p_values[0]) for i in p_values):
+            p_combinations = []
+            if not all(len(i) == len(parameter_values[0]) for i in parameter_values):
                 raise ValueError("Each parameter should have the same number of values")
             else:
-                for i in range(len(p_values[0])):
-                    pairs.append([j[i] for j in p_values])
-            p_combinations = np.array(pairs)
+                for i in range(len(parameter_values[0])):
+                    p_combinations.append([j[i] for j in parameter_values])
+            p_combinations = np.array(p_combinations)
             if not params_from_fit:
                 p_combinations = p_combinations.repeat(n_subjects, axis=0)
 
+        # put combinations of parameters back into dictionaries
         for n, p in enumerate(self.sim_learning_parameters.keys() + self.sim_observation_parameters.keys()):
             if p in self.sim_learning_parameters.keys():
                 self.sim_learning_parameters[p] = p_combinations[:, n]
             else:
                 self.sim_observation_parameters[p] = p_combinations[:, n]
+
         # each parameter now has a list of values
 
 
-        # set up parameters
+        # Generate row names for simulated output (row names reflect parameter values used in simulation)
+
+        row_names = []
+        row_names_short = []
+
+        row_numbers = np.arange(0, p_combinations.shape[0] / runs_per_subject)
+        row_numbers = np.repeat(row_numbers, runs_per_subject)
+        row_numbers = [str(i).zfill(len(str(p_combinations.shape[0]))) for i in row_numbers]
+
+        runs = np.arange(0, runs_per_subject)
+        runs = np.tile(runs, p_combinations.shape[0] / runs_per_subject)
+
+        for i in range(0, p_combinations.shape[0]):
+            row_names_short.append(str(p_combinations[i, :]))
+            rname = [str(x) for t in zip(self.sim_learning_parameters.keys() + self.sim_observation_parameters.keys(),
+                                         p_combinations[i, :]) for x in t]
+            row_names.append('{0}_'.format(row_numbers[i]) + '.'.join(rname))
+
+
+        # Set up parameters
+        # Parameters need to be given to scan as arrays - here we take them out of their dictionaries and make sure
+        # they're in the correct format (i.e. float64)
+
+        sim_dynamic = []
+        sim_static = []
+        sim_observation = []
+        sim_observation_dynamic = []  # TODO does this get used?
+
         for n, i in enumerate(self.learning_parameters):
             match = False
             for p, v in self.sim_learning_parameters.iteritems():
@@ -797,32 +884,16 @@ class DMModel():
                     raise ValueError("Parameter {0} has no value provided".format(i.name))
 
 
-
-        # generate row names for output
-        rnames = []
-        rnames_short = []
-
-        rnumbers = np.arange(0, p_combinations.shape[0] / runs_per_subject)
-        rnumbers = np.repeat(rnumbers, runs_per_subject)
-        fill_length = len(str(p_combinations.shape[0]))
-        rnumbers = [str(i).zfill(fill_length) for i in rnumbers]
-
-        runs = np.arange(0, runs_per_subject)
-        runs = np.tile(runs, p_combinations.shape[0] / runs_per_subject)
-
-        for i in range(0, p_combinations.shape[0]):
-            rnames_short.append(str(p_combinations[i, :]))
-            rname = [str(x) for t in zip(self.sim_learning_parameters.keys() + self.sim_observation_parameters.keys(),
-                                         p_combinations[i, :]) for x in t]
-            rnames.append('{0}_'.format(rnumbers[i]) + '.'.join(rname))
-
-        # simulation structure = parameter combinations repeated for each subject e.g. S1P1 S1P2 S2P1 S2P2...
-
-        # all of the following section is terribly written and involves a million (unnecessary) transpositions
+        # Make sure outcomes are the right format
 
         outcomes = np.array(outcomes)
-        if len(outcomes.shape) < 2:
+
+        if len(outcomes.shape) < 2:  # if one dimensional, make two-dimensional
             outcomes = outcomes.reshape((1, outcomes.shape[0]))
+
+        print outcomes.shape
+        print p_combinations.shape
+
         if outcomes.shape[0] < p_combinations.shape[0]:
             warnings.warn("Fewer outcome lists than simulated subjects, attempting to use same outcomes for each "
                           "subject", Warning)
@@ -834,78 +905,112 @@ class DMModel():
                                  "simulated subjects is divisible by the number of outcomes. Number of outcome arrays"
                                  " = {0}, number of simulated subject = {1}".format(outcomes.shape[0], p_combinations.shape[0]))
 
-        if len(outcomes.shape) > 1:
-            if params_from_fit:
-                outcomes = outcomes.T
-            if not (outcomes.shape[0] == p_combinations.shape[0] or outcomes.shape[1] == p_combinations.shape[0]):
-                raise ValueError("Number of outcome lists provided does not match number of subjects")
-            elif outcomes.shape[1] == n_subjects:
-                outcomes = outcomes.T
-            temp_outcomes = np.hstack([outcomes, np.tile([2], (
-            outcomes.shape[0], 1))]) # add an extra outcome to get outputs for the final trial if needed (e.g. PE)
+        if not (outcomes.shape[0] == p_combinations.shape[0] or outcomes.shape[1] == p_combinations.shape[0]):
+            raise ValueError("Number of outcome lists provided does not match number of subjects")
+
+        if not params_from_fit:  # this could fail in some circumstances
             outcomes = outcomes.T
-            temp_outcomes = temp_outcomes.T
-        else:
-            temp_outcomes = np.hstack([outcomes, 2])
 
+        if outcomes.shape[1] == n_subjects:
+            outcomes = outcomes.T
 
-        if len(temp_outcomes.shape) < 2:
-            temp_outcomes = temp_outcomes.reshape((temp_outcomes.shape[0], 1))
-        x_shape = np.array(temp_outcomes.shape)
-        time = theano.shared(np.tile(np.arange(0, x_shape[0]), (x_shape[1], 1)).T)
-
-        temp_outcomes = theano.shared(temp_outcomes)
-        outcomes = theano.shared(outcomes)
+        # Create theano shared variables and scan function
+        # when simulation is run for the first time, a theano function based on a scan loop is created and stored
+        # this gets reused for subsequent simulations (until the model is redeclared) - this saves compiling on each
+        # simulation and speeds the process up a lot
 
         outputs_info = sim_dynamic + [None] * (self.__n_learning_returns - len(sim_dynamic))
-        outputs_info = [[theano.shared(i)] if i is not None and not isinstance(i, list) else i for i in outputs_info]
+        time = np.tile(np.arange(0, outcomes.shape[0]), (outcomes.shape[1], 1)).T
 
-        # sequences for scan should be in format (n_trials, n_subjects)
+        sim_static = [np.array([i]) if not isinstance(i, np.ndarray) else i for i in sim_static]
+        outputs_info = [np.array([i]) if not isinstance(i, np.ndarray) and i is not None else i for i in outputs_info]
 
-        # simulate with scan
+        print outputs_info
 
-        value, updates = scan(fn=self.learning_model,
-                              sequences=[dict(input=temp_outcomes, taps=[-1]), dict(input=time)],
-                              # sim_dynamic = fed back into next step, none for other things like PEs
-                              outputs_info=outputs_info,
-                              non_sequences=sim_static)
+        if self._simulate_function == None:
 
-        _value, _updates = scan(fn=self.__learning_model_initial,
-                              sequences=[dict(input=outcomes[:2]), dict(input=time[:2])],
-                              # sim_dynamic = fed back into next step, none for other things like PEs
-                              outputs_info=outputs_info,
-                              non_sequences=sim_static)
+            # define theano tensors
+            time_theano = T.matrix("time")
+            outcomes_theano = T.matrix("outcomes")
+            sim_static_theano = []
+            outputs_info_theano = []
+            sim_observation_theano = []
 
-        outcomes = outcomes.eval()
-        outcomes = outcomes.T  # transpose outcomes back - this code could do with reworking to keep orientation consistent
+            for n, i in enumerate(outputs_info):
+                if i is None:
+                    outputs_info_theano.append(None)
+                else:
+                    outputs_info_theano.append(T.vector("outputs_info_{0}".format(n)))
 
-        if not len(value):
-            value = [value]
-            _value = [_value]
+            for n, i in enumerate(sim_static):
+                sim_static_theano.append(T.vector("sim_static_{0}".format(n)))
 
-        for n, v in enumerate(value):
-            if n < len(sim_dynamic):
-                value[n] = T.concatenate([_value[n], v[:-1]])[1:]
+            for n, i in enumerate(sim_observation):
+                sim_observation_theano.append(T.vector("sim_observation_{0}".format(n)))
 
-        observation_dynamics = [value[i] for i in self.__observation_dynamic_inputs]
+            # sequences for scan should be in format (n_trials, n_subjects)
 
-        if self.observation_model is not None:
-            prob, obs_outs = self.observation_model(*observation_dynamics + sim_observation)
-            prob = prob.eval().squeeze()  # using .eval() is bad
+            value, updates = scan(fn=self.learning_model,
+                                  sequences=[dict(input=outcomes_theano), dict(input=time_theano)],
+                                  outputs_info=outputs_info_theano,
+                                  non_sequences=sim_static_theano)
+
+            for n, i in enumerate(outputs_info_theano):
+                if i is not None:
+                    value[n] = T.vertical_stack(i.reshape((1, i.shape[0])), value[n][:-1, :])
+
+            if self.observation_model is not None:
+                observation_dynamics = [value[i] for i in self.__observation_dynamic_inputs]
+                prob, obs_outs = self.observation_model(*observation_dynamics + sim_observation_theano)
+            else:
+                prob, obs_outs = theano.shared(np.nan), []
+
+            if len(obs_outs) == 0:
+                obs_outs = theano.shared(np.nan)
+
+            out = [T.as_tensor_variable(list(value)), prob, obs_outs]
+
+            self._simulate_function = theano.function(inputs=[outcomes_theano, time_theano] +
+                                                              sim_static_theano +
+                                                             [i for i in outputs_info_theano if i is not None] +
+                                                             sim_observation_theano,
+                                                      outputs=out, updates=updates)
+
+        # Call the function
+
+        # if single_parameter_values:  # temporary(ish) solution for shape problem with single values
+        #     outcomes = outcomes.T
+
+        sim_data = self._simulate_function(outcomes, time, *(sim_static + [i for i in outputs_info if i is not None] +
+                                                             sim_observation))
+
+        # Get the results
+
+        prob = sim_data[1]
+
+        # The simulation function outputs nan for prob and obs_outs if they're not present
+        if not np.isnan(sim_data[2]):
+            obs_outs = sim_data[2]
         else:
-            prob, obs_outs = None, []
+            obs_outs = []
 
-        eval_value = [v.eval().squeeze() for v in value] + [o.eval().squeeze() for o in obs_outs]
+        if np.isnan(prob):
+            prob = None
 
-        value = eval_value[0]
+        # Create a list of returned values
+        returned_values = [sim_data[0][i, ...] for i in range(sim_data[0].shape[0])] + list(obs_outs)
+        value = returned_values[0]  # Handy as we refer to the estimated value a lot
 
-        if noise and output_value:
+        outcomes = outcomes.T  # transpose outcomes to make plotting easier
+
+        # Add noise
+        if output_value:
             value = _add_noise(value, noise_mean, noise_sd, lower_bound=np.min(outcomes), upper_bound=np.max(outcomes))
-        elif noise:
+        elif prob is not None:
             prob = _add_noise(prob, noise_mean, noise_sd, lower_bound=np.min(outcomes), upper_bound=np.max(outcomes))
 
         # check for nans and warn if found
-        if (prob is not None and np.any(np.isnan(prob))) or np.any(np.isnan(eval_value[0])):
+        if (prob is not None and np.any(np.isnan(prob))) or np.any(np.isnan(returned_values[0])):
             warnings.warn("NaNs present in estimated probabilities. Parameter values are likely in invalid ranges or "
                           "there is an error in the model code.")
 
@@ -914,10 +1019,11 @@ class DMModel():
             return_names = self.__learning_returns + self.__observation_returns[1:]
         else:
             return_names = self.__learning_returns
-        result_dict = dict(zip(return_names, eval_value))
+        result_dict = dict(zip(return_names, returned_values))
         if prob is not None:
             result_dict['P'] = prob
 
+        # Create a dictionary of simulated values
         self.simulated = dict(sim_learning_params=self.sim_learning_parameters,
                               sim_obs_params=self.sim_observation_parameters,
                               sim_results=result_dict)
@@ -934,13 +1040,13 @@ class DMModel():
             # if len(prob.shape) < 2:
             #     sns.set_palette(sns.color_palette(['#348ABD']))
 
-            fig, axarr = plt.subplots(len(eval_value), 1, figsize=(8, 1.5 * len(eval_value)))
+            fig, axarr = plt.subplots(len(returned_values), 1, figsize=(8, 1.5 * len(returned_values)))
 
             try:
                 if prob is not None:
                     pal = sns.color_palette(palette, prob.shape[1])
                 else:
-                    pal = sns.color_palette(palette, eval_value[0].shape[1])
+                    pal = sns.color_palette(palette, returned_values[0].shape[1])
             except IndexError:
                 pal = sns.color_palette(palette, 1)
 
@@ -950,7 +1056,9 @@ class DMModel():
                 value = value.reshape((value.shape[0], 1))
 
             if plot_value:
+                print value.shape
                 for n in range(0, value.shape[1]):
+                    print n
                     axarr[0].plot(value, label='Value', c=pal[n])
                     axarr[0].set_title('Value', fontweight=fontweight)
 
@@ -987,8 +1095,8 @@ class DMModel():
                 axarr[0].legend(frameon=True, fancybox=True)
 
             # plot other estimated values
-            for i in range(1, len(eval_value)):
-                plot_values = np.array(eval_value[i])
+            for i in range(1, len(returned_values)):
+                plot_values = np.array(returned_values[i])
                 if len(plot_values.shape) < 2:
                     plot_values = plot_values.reshape((plot_values.shape[0], 1))
                 for n in range(0, plot_values.shape[1]):
@@ -1000,39 +1108,42 @@ class DMModel():
 
         if plot_against_true:
 
+            responses_eval = self.responses.eval()
+
             fontweight='normal'
 
             if self.fit_complete:
 
                 for n, sub in enumerate(self.subjects):
 
-                    fig, axarr = plt.subplots(self.n_runs, 1, figsize=(8, 1.5 * self.n_runs))
+                    n_runs = int(n_runs)
+                    fig, axarr = plt.subplots(n_runs, 1, figsize=(8, 1.5 * n_runs))
 
-                    if self.n_runs > 1:
+                    if n_runs > 1:
 
-                        for i in range(self.n_runs):
+                        for i in range(n_runs):
 
-                            index = n * self.n_runs + i
+                            index = n * n_runs + i
                             axarr[i].plot(value.T[index], label='Model')
                             if response_format == 'continuous':
-                                axarr[i].plot(self.responses[index], label='Data', color='#3d3d3d')
+                                axarr[i].plot(responses_eval[index], label='Data', color='#3d3d3d')
                             elif response_format == 'discrete':
-                                axarr[i].scatter(range(len(self.responses[index])), self.responses[index],
+                                axarr[i].scatter(range(len(responses_eval[index])), responses_eval[index],
                                                  label='Data', color='#3d3d3d')
 
                             axarr[i].legend(frameon=True)
 
                             axarr[0].set_title("Subject {0}".format(sub), fontweight=fontweight)
-                            axarr[self.n_runs - 1].set_xlabel("Trial")
+                            axarr[n_runs - 1].set_xlabel("Trial")
 
                     else:
 
-                        index = n * self.n_runs
+                        index = n * n_runs
                         axarr.plot(value.T[index], label='Model')
                         if response_format == 'continuous':
-                            axarr.plot(self.responses[index], label='Data', color='#3d3d3d')
+                            axarr.plot(responses_eval[index], label='Data', color='#3d3d3d')
                         elif response_format == 'discrete':
-                            axarr.scatter(range(len(self.responses[index])), self.responses[index],
+                            axarr.scatter(range(len(responses_eval[index])), responses_eval[index],
                                           label='Data', color='#3d3d3d')
 
                         axarr.legend(frameon=True)
@@ -1048,7 +1159,7 @@ class DMModel():
         if prob is not None:
             choices = generate_choices2(prob)
         else:
-            choices = generate_choices2(eval_value[0])
+            choices = generate_choices2(returned_values[0])
         self.simulated['sim_results']['choices'] = choices
 
         print "Finished simulating"
@@ -1056,11 +1167,11 @@ class DMModel():
 
         if len(output_file):
             if output_value:  # need a better way to return raw prob / choices / value
-                simulated_responses(value, outcomes.T, rnames, runs, output_file,
+                simulated_responses(value, outcomes.T, row_names, runs, output_file,
                                     (self.sim_learning_parameters.keys(), p_combinations),
                                     (self.sim_observation_parameters.keys(), p_combinations))
             else:
-                simulated_responses(choices, outcomes.T, rnames, runs, output_file,
+                simulated_responses(choices, outcomes.T, row_names, runs, output_file,
                                     (self.sim_learning_parameters.keys(), p_combinations),
                                     (self.sim_observation_parameters.keys(), p_combinations))
 
@@ -1079,8 +1190,8 @@ class DMModel():
         fit_params = [i for i in self.parameter_table.columns if not 'sd_' in i and not 'Subject' in i]
         self.parameter_table = pd.merge(self.parameter_table, self.sims, on='Subject')
         print "Performing parameter recovery tests..."
-        p_values = []
-        p_values_sim = []
+        parameter_values = []
+        parameter_values_sim = []
         n_p_free = len(fit_params)
 
         fontweight = 'normal'
@@ -1090,8 +1201,8 @@ class DMModel():
         for n, p in enumerate(fit_params):  # this code could all be made far more efficient
             if p.replace('mean_', '') + '_sim' not in self.sims.columns:
                 raise ValueError("Simulated values for parameter {0} not found in response file".format(p))
-            p_values.append(self.parameter_table[p])
-            p_values_sim.append(self.parameter_table[p.replace('mean_', '') + '_sim'])
+            parameter_values.append(self.parameter_table[p])
+            parameter_values_sim.append(self.parameter_table[p.replace('mean_', '') + '_sim'])
             if n_p_free > 1:
                 ax = axarr[n]
             else:
@@ -1119,13 +1230,13 @@ class DMModel():
 
         ## SIMULATED-POSTERIOR CORRELATIONS
         if len(self.parameter_table) > 1:
-            if np.sum(np.diff(p_values_sim)) == 0:
+            if np.sum(np.diff(parameter_values_sim)) == 0:
                 warnings.warn("Parameter values used across simulations are identical, unable to calculate "
                               "correlations between simulated and estimated parameter values. Try providing a "
                               "range of parameter values when simulating.")
                 se_cor = None
             else:
-                se_cor = np.corrcoef(p_values, p_values_sim)[n_p_free:, :n_p_free]
+                se_cor = np.corrcoef(parameter_values, parameter_values_sim)[n_p_free:, :n_p_free]
                 fig, ax = plt.subplots(figsize=(n_p_free * 3, n_p_free * 2.5))
                 cmap = sns.diverging_palette(220, 10, as_cmap=True)
                 sns.heatmap(se_cor, cmap=cmap, square=True, linewidths=.5, xticklabels=fit_params,
@@ -1135,7 +1246,7 @@ class DMModel():
                 ax.set_title("Simulated-Posterior correlations", fontweight=fontweight)
 
             ## POSTERIOR CORRELATIONS
-            ee_cor = np.corrcoef(p_values, p_values)[n_p_free:, :n_p_free]
+            ee_cor = np.corrcoef(parameter_values, parameter_values)[n_p_free:, :n_p_free]
             fig, ax = plt.subplots(figsize=(n_p_free * 3, n_p_free * 2.5))
             cmap = sns.diverging_palette(220, 10, as_cmap=True)
             sns.heatmap(ee_cor, cmap=cmap, square=True, linewidths=.5, xticklabels=fit_params,

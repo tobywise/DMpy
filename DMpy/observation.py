@@ -23,6 +23,3 @@ def softmax_ml2(v, c, b, m):
     bb = b / (1 - m * np.tanh(c))
     return ((bb * v).exp() / ((bb * v).exp() + (bb * (1 - v)).exp()), [bb])
 
-
-def test(a):
-    return a+1, a+2, a+3

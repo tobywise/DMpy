@@ -28,6 +28,8 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
     else:
         kwargs = {}
 
+    n_subjects = n_subjects.eval()  # probably not a good way to do things
+
     if mle and (p.distribution != 'uniform' and p.distribution != 'flat' and p.distribution != 'fixed'):
 
         if p.upper_bound is not None and p.lower_bound is not None:
@@ -52,7 +54,7 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
             p.distribution = 'flat'
 
     if p.fixed:
-        p.pymc_distribution = np.float64(np.ones(n_subjects) * p.mean)
+        p.pymc_distribution = T.ones(n_subjects) * p.mean
 
     else:  # there must be a cleaner way to do this
 
@@ -144,9 +146,10 @@ def model_fit(logp, fit_values, vars, outcome):
     """
     Calculates model fit statistics (log likelihood, BIC, AIC)
     """
+    print vars
 
     log_likelihood = logp(fit_values)
-    BIC = len(vars) * np.log(len(outcome)) - 2. * log_likelihood
+    BIC = len(vars) * np.log(len(outcome.eval())) - 2. * log_likelihood
     AIC = 2. * (len(vars) - log_likelihood)
 
     return log_likelihood, BIC, AIC
@@ -460,7 +463,7 @@ def model_check(model_function, parameters):
 
 def r2(true, predicted):
 
-    if true.shape != true.shape:
+    if not T.eq(true.shape, predicted.shape):
         try:
             raise AttributeError("True and predicted arrays should have the same shape, current shapes: True = {0},"
                                  " predicted = {1}".format(true.shape, predicted.shape))
