@@ -409,6 +409,9 @@ class DMModel():
         if responses.shape[0] == 1:
             responses = responses[0]
 
+        if len(responses.shape) < 2:
+            responses = responses.reshape(1, responses.shape[0])
+
         if responses.shape[1] != outcomes.shape[0]:
             raise ValueError("Responses ({0}) and outcomes ({1}) have unequal lengths".format(responses.shape[1],
                                                                                               outcomes.shape[0]))
@@ -421,7 +424,7 @@ class DMModel():
 
         if self._pymc3_model is None or self._fit_method != fit_method.lower() or n_subjects != self.n_subjects:
 
-            # create model if it doesn't exist or the fitting method has been changed
+            # create model if it doesn't exist, the fitting method has been changed, or number of subjects has changed
             # turn outcomes and responses into shared variables
 
             self.responses = theano.shared(responses)
@@ -880,7 +883,7 @@ class DMModel():
         if not params_from_fit:  # this could fail in some circumstances
             outcomes = outcomes.T
 
-        if outcomes.shape[1] == n_subjects:
+        if outcomes.shape[0] == n_subjects:
             outcomes = outcomes.T
 
         # Create theano shared variables and scan function
@@ -944,12 +947,11 @@ class DMModel():
                                                       outputs=out, updates=updates)
 
         # Call the function
-
-        # if single_parameter_values:  # temporary(ish) solution for shape problem with single values
-        #     outcomes = outcomes.T
+        print outcomes.shape
 
         sim_data = self._simulate_function(outcomes, time, *(sim_static + [i for i in outputs_info if i is not None] +
                                                              sim_observation))
+
 
         # Get the results
 

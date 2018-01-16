@@ -139,16 +139,17 @@ def backward(a, b, x):
     return r
 
 
-def model_fit(logp, fit_values, vars, outcome):
+def model_fit(logp, fit_values, variables, outcome):
 
     """
     Calculates model fit statistics (log likelihood, BIC, AIC)
     """
-    print vars
+    print variables
 
     log_likelihood = logp(fit_values)
-    BIC = len(vars.eval()) * np.log(len(outcome.eval())) - 2. * log_likelihood
-    AIC = 2. * (len(vars.eval()) - log_likelihood)
+
+    BIC = len(variables) * np.log(len(outcome.eval())) - 2. * log_likelihood
+    AIC = 2. * (len(variables) - log_likelihood)
 
     return log_likelihood, BIC, AIC
 
