@@ -28,8 +28,6 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
     else:
         kwargs = {}
 
-    n_subjects = n_subjects.eval()  # probably not a good way to do things
-
     if mle and (p.distribution != 'uniform' and p.distribution != 'flat' and p.distribution != 'fixed'):
 
         if p.upper_bound is not None and p.lower_bound is not None:
@@ -105,7 +103,7 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
             if hierarchical:
                 p.pymc_distribution = Uniform(p.name, lower=p.lower_bound, upper=p.upper_bound,
                                              shape=n_subjects, **kwargs)
-            elif n_subjects > 1:
+            elif T.gt(n_subjects, 1):
                 p.pymc_distribution = Uniform(p.name, lower=p.lower_bound, upper=p.upper_bound,
                                              shape=n_subjects, **kwargs)
             else:
@@ -149,8 +147,8 @@ def model_fit(logp, fit_values, vars, outcome):
     print vars
 
     log_likelihood = logp(fit_values)
-    BIC = len(vars) * np.log(len(outcome.eval())) - 2. * log_likelihood
-    AIC = 2. * (len(vars) - log_likelihood)
+    BIC = len(vars.eval()) * np.log(len(outcome.eval())) - 2. * log_likelihood
+    AIC = 2. * (len(vars.eval()) - log_likelihood)
 
     return log_likelihood, BIC, AIC
 

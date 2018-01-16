@@ -1,7 +1,7 @@
 import numpy as np
 import pymc3 as pm
 from pymc3.distributions import Continuous
-from theano import scan
+from theano import scan, function, printing
 import theano.tensor as T
 import theano
 from pymc3 import fit, sample_approx
@@ -109,7 +109,7 @@ class _PyMCModel(Continuous):
     """
 
     def __init__(self, learning_models, learning_parameters, observation_model, observation_parameters, responses, hierarchical,
-                 n_subjects, n_runs, mle=False, outcomes=None, logp_method='ll', *args, **kwargs):
+                 n_subjects, time, n_runs, mle=False, outcomes=None, logp_method='ll', *args, **kwargs):
         super(_PyMCModel, self).__init__(*args, **kwargs)
 
         self.fit_complete = False
@@ -122,6 +122,7 @@ class _PyMCModel(Continuous):
         self.n_subjects = n_subjects
         self.responses = responses
         self.outcomes = outcomes
+        self.time = time
         self.n_runs = n_runs
         self.logp_method = logp_method
 
@@ -141,9 +142,6 @@ class _PyMCModel(Continuous):
 
         self.__n_dynamic = len(self.dynamic_parameters)
         self.__n_learning_returns, _ = n_returns(self.learning_model)
-
-        x_shape = np.array(self.outcomes.eval().shape)
-        self.time = theano.shared(np.tile(np.arange(0, x_shape[0]), (x_shape[1], 1)).T)
 
         self.responses = self.responses.T
         if self.responses.ndim == 1:
@@ -165,7 +163,7 @@ class _PyMCModel(Continuous):
             prob: Probability of choosing an option
         """
 
-        # begin awful hack - there must be a better way to get values on trial+1 while retaining initial value on t = 0
+        # begin awful hack - there is probably a better way to get values on trial+1 while retaining initial value on t = 0
 
         self.static_parameters_reshaped = [np.repeat(i, self.n_runs) for i in self.static_parameters]
         self.dynamic_parameters_reshaped = [np.repeat(i, self.n_runs) for i in self.dynamic_parameters]
@@ -176,11 +174,11 @@ class _PyMCModel(Continuous):
 
         try:
             value, _ = scan(fn=self.learning_model,
-                            sequences=[dict(input=x, taps=[-1]), dict(input=self.time, taps=[-1])],
+                            sequences=[dict(input=x, taps=[-1]), dict(input=T.ones_like(x), taps=[-1])],
                             outputs_info=self.dynamic_parameters_reshaped + [None] * (self.__n_learning_returns - self.__n_dynamic),
                             non_sequences=self.static_parameters_reshaped)
             _value, _ = scan(fn=self.__learning_model_initial,
-                                    sequences=[dict(input=x[:1, :]), dict(input=self.time[0:2])],
+                                    sequences=[dict(input=x[:1, :]), dict(input=T.ones_like(x)[0:2])],
                              outputs_info=self.dynamic_parameters_reshaped + [None] * (self.__n_learning_returns - self.__n_dynamic),
                              non_sequences=self.static_parameters_reshaped)
         except ValueError as e:
@@ -206,7 +204,6 @@ class _PyMCModel(Continuous):
 
         if self.observation_model is not None:
             prob, obs_outs = self.observation_model(*observation_dynamics + self.observation_parameters_reshaped)
-            # prob = None  # TODO Surely this should cause a problem?
             prob = prob.squeeze()
         else:
             prob = value[0]
@@ -313,10 +310,10 @@ class DMModel():
 
 
         # create model
-        self._model_test = None
+        self._pymc3_model = None
 
 
-    def _create_model(self, outcomes, responses, n_subjects, n_runs, mle=False):
+    def _create_model(self, mle=False):
 
         """
         Internally used method for generating PyMC3 model instance - allows model instance to be cached and reused
@@ -330,13 +327,13 @@ class DMModel():
 
         """
 
-        with pm.Model(theano_config={'compute_test_value': 'ignore'}) as model:
+        with pm.Model(theano_config={'compute_test_value': 'ignore', 'optimizer': 'fast_compile'}) as model:
 
             m = _PyMCModel('model', learning_models=(self.learning_model, self.__learning_model_initial),
                           learning_parameters=self.learning_parameters,
                           observation_model=self.observation_model,
                           observation_parameters=[self.observation_parameters, self.__observation_dynamic_inputs],
-                          responses=self.responses, observed=self.outcomes, outcomes=self.outcomes,
+                          responses=self.responses, observed=self.outcomes, outcomes=self.outcomes, time=self.time,
                           n_subjects=self.n_subjects, n_runs=self.n_runs, hierarchical=False, mle=mle,
                           logp_method=self.logp_method)
 
@@ -346,7 +343,7 @@ class DMModel():
             params = [i for j in params for i in j]
             self.params = [p for p in params if p is not None]
 
-        self._model_test = model
+        self._pymc3_model = model
 
         print "Created model"
 
@@ -420,22 +417,25 @@ class DMModel():
         else:
             mle = False
 
-        if self._model_test is None or self._fit_method != fit_method.lower():
+        time = np.tile(np.arange(0, outcomes.shape[0]), (outcomes.shape[1], 1)).T
+
+        if self._pymc3_model is None or self._fit_method != fit_method.lower() or n_subjects != self.n_subjects:
 
             # create model if it doesn't exist or the fitting method has been changed
             # turn outcomes and responses into shared variables
 
             self.responses = theano.shared(responses)
             self.outcomes = theano.shared(outcomes)
-            self.n_subjects = theano.shared(n_subjects)
+            self.time = theano.shared(time)
+            self.n_subjects = n_subjects
             self.n_runs = theano.shared(n_runs)
-            self._create_model(self.outcomes, self.responses, self.n_subjects, self.n_runs, mle=mle)
+            self._create_model(mle=mle)
 
         self.responses.set_value(responses)
         self.outcomes.set_value(outcomes)
-        self.n_subjects.set_value(n_subjects)
+        self.time.set_value(time)
+        self.n_subjects = n_subjects
         self.n_runs.set_value(n_runs)
-
         self._fit_method = fit_method.lower()
 
         # run fitting method
@@ -485,23 +485,14 @@ class DMModel():
         elif not hierarchical and self.n_subjects > 1:
             print "Performing non-hierarchical model fitting for {0} subjects".format(self.n_subjects)
 
-
-        with pm.Model() as rl:
-            m = _PyMCModel('rl', learning_models=(self.learning_model, self.__learning_model_initial),
-                          learning_parameters=self.learning_parameters,
-                          observation_model=self.observation_model,
-                          observation_parameters=[self.observation_parameters, self.__observation_dynamic_inputs],
-                          responses=self.responses, observed=self.outcomes, outcomes=self.outcomes,
-                          subjects=self.subjects, n_runs=self.n_runs, hierarchical=hierarchical,
-                          logp_method=logp_method)
+        with self._pymc3_model:
 
             self.trace = pm.sample(**kwargs)
 
             if plot:
                 traceplot(self.trace)
 
-        self._model = rl
-        self.fit_values = pm.df_summary(self.trace, varow_names=self.trace.varow_names)['mean'].to_dict()
+        self.fit_values = pm.df_summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
 
         print "\nPARAMETER ESTIMATES\n"
 
@@ -515,13 +506,13 @@ class DMModel():
         elif recovery:
             warnings.warn("No simulations have been performed, unable to perform parameter recovery tests")
 
-        # these seem to take a lot of time...
-        if fit_stats:
-            print "Calculating DIC..."
-            self.DIC = pm.dic(self.trace, rl)
-            print "Calculating WAIC..."
-            self.WAIC = pm.waic(self.trace, rl)[0]
-            print "Calculated fit statistics"
+        # # these seem to take a lot of time...
+        # if fit_stats:
+        #     print "Calculating DIC..."
+        #     self.DIC = pm.dic(self.trace, rl)
+        #     print "Calculating WAIC..."
+        #     self.WAIC = pm.waic(self.trace, rl)[0]
+        #     print "Calculated fit statistics"
 
 
         #self.log_likelihood, self.BIC, self.AIC = model_fit(rl.logp, self.fit_values, rl.vars)
@@ -554,37 +545,18 @@ class DMModel():
         elif not hierarchical and self.n_subjects > 1:
             print "Performing non-hierarchical model fitting for {0} subjects".format(self.n_subjects)
 
-        with pm.Model() as rl:
-            m = _PyMCModel('rl', learning_models=(self.learning_model, self.__learning_model_initial),
-                          learning_parameters=self.learning_parameters,
-                          observation_model=self.observation_model,
-                          observation_parameters=[self.observation_parameters, self.__observation_dynamic_inputs],
-                          responses=self.responses, observed=self.outcomes, outcomes=self.outcomes,
-                          subjects=self.subjects,  n_runs=self.n_runs, hierarchical=hierarchical,
-                          logp_method=logp_method)
+        with self._pymc3_model:
 
-            self.approx = fit(model=rl, **fit_kwargs)
+            self.approx = fit(**fit_kwargs)
             self.trace = sample_approx(self.approx, **sample_kwargs)
 
             print "Done"
 
-            if plot:
-                traceplot(self.trace)
+        if plot:
+            traceplot(self.trace)
 
-        self.fit_values = pm.df_summary(self.trace, varow_names=self.trace.varow_names)['mean'].to_dict()
+        self.fit_values = pm.df_summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
         self.fit_complete = True
-        self._model = rl
-
-        # elif method == 'MAP':  # need to transform these values
-        #     for p, v in map_estimate.iteritems():
-        #         if 'interval' in p:
-        #             map_estimate[p] = backward(0, 1, v)
-        #         elif 'lowerbound' in p:
-        #             map_estimate[p] = np.exp(v)
-        #     self.fit_values = self.trace
-
-        self.logp = rl.logp
-        self.vars = rl.vars
 
         print "\nPARAMETER ESTIMATES\n"
 
@@ -596,13 +568,13 @@ class DMModel():
         if recovery and self.sims is not None:
             self.recovery_correlations = self.recovery()
 
-        if fit_stats:
-            # these seem to take a lot of time...
-            print "Calculating DIC..."
-            self.DIC = pm.dic(self.trace, rl)
-            print "Calculating WAIC..."
-            self.WAIC = pm.waic(self.trace, rl)[0]
-            print "Calculated fit statistics"
+        # if fit_stats:
+        #     # these seem to take a lot of time...
+        #     print "Calculating DIC..."
+        #     self.DIC = pm.dic(self.trace, rl)
+        #     print "Calculating WAIC..."
+        #     self.WAIC = pm.waic(self.trace, rl)[0]
+        #     print "Calculated fit statistics"
 
         # TODO figure out fit statistics for multi-subject model fits
         # self.log_likelihood, self.BIC, self.AIC = model_fit(rl.logp, self.fit_values, rl.vars)
@@ -628,12 +600,12 @@ class DMModel():
         # assert len(outcomes) == len(observed), "Outcome and observed data are " \
         #                                        "different lengths ({0} and ({1}".format(len(outcomes), len(observed))
 
-        print "Performing model fitting for {0} subjects".format(self.n_subjects.eval())
+        print "Performing model fitting for {0} subjects".format(self.n_subjects)
 
         self._model = {}
         self.map_estimate = {}
 
-        with self._model_test:
+        with self._pymc3_model:
 
             try:
                 self.map_estimate = find_MAP(**kwargs)
@@ -662,7 +634,7 @@ class DMModel():
 
         print "\nPARAMETER ESTIMATES\n"
 
-        if self.n_subjects.eval() > 1:
+        if self.n_subjects > 1:
             self.parameter_table = pd.DataFrame(self.fit_values)
             self.parameter_table['Subject'] = self.subjects
             self.parameter_table.sort_values('Subject')
@@ -676,7 +648,7 @@ class DMModel():
         if not suppress_table:
             print self.parameter_table
 
-        self.log_likelihood, self.BIC, self.AIC = model_fit(self._model_test.logp, self.map_estimate, self._model_test.vars, self.outcomes)
+        self.log_likelihood, self.BIC, self.AIC = model_fit(self._pymc3_model.logp, self.map_estimate, self._pymc3_model.vars, self.outcomes)
 
         self.DIC = None
         self.WAIC = None
@@ -762,7 +734,7 @@ class DMModel():
             params_from_fit = True  # use best values from model fitting if parameter values aren't provided
 
             n_runs = self.n_runs.eval()
-            n_subjects = self.n_subjects.eval()
+            n_subjects = self.n_subjects
             outcomes = self.outcomes.eval()
 
             self.sim_learning_parameters = OrderedDict()
@@ -891,9 +863,6 @@ class DMModel():
         if len(outcomes.shape) < 2:  # if one dimensional, make two-dimensional
             outcomes = outcomes.reshape((1, outcomes.shape[0]))
 
-        print outcomes.shape
-        print p_combinations.shape
-
         if outcomes.shape[0] < p_combinations.shape[0]:
             warnings.warn("Fewer outcome lists than simulated subjects, attempting to use same outcomes for each "
                           "subject", Warning)
@@ -924,8 +893,6 @@ class DMModel():
 
         sim_static = [np.array([i]) if not isinstance(i, np.ndarray) else i for i in sim_static]
         outputs_info = [np.array([i]) if not isinstance(i, np.ndarray) and i is not None else i for i in outputs_info]
-
-        print outputs_info
 
         if self._simulate_function == None:
 
@@ -1056,9 +1023,7 @@ class DMModel():
                 value = value.reshape((value.shape[0], 1))
 
             if plot_value:
-                print value.shape
                 for n in range(0, value.shape[1]):
-                    print n
                     axarr[0].plot(value, label='Value', c=pal[n])
                     axarr[0].set_title('Value', fontweight=fontweight)
 
