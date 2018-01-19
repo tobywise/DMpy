@@ -225,7 +225,7 @@ def load_data(data_file, exclude=None):
 
     if n_subjects > 1:
         print "Loading multi-subject data with {0} subjects, {1} runs per subject".format(n_subjects,
-                                                                                          len(np.unique(n_runs)))
+                                                                                          n_runs)
     else:
         print "Loading single subject data"
 

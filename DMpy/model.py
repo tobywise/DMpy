@@ -265,6 +265,8 @@ class DMModel():
         self._model = None
         self.fit_complete = False
         self._fit_method = None
+        self._recovery_run = False
+        self._hierarchical = False
 
         self.__n_learning_returns, self.__learning_returns = n_returns(self.learning_model)
 
@@ -313,7 +315,7 @@ class DMModel():
         self._pymc3_model = None
 
 
-    def _create_model(self, mle=False):
+    def _create_model(self, mle=False, hierarchical=False):
 
         """
         Internally used method for generating PyMC3 model instance - allows model instance to be cached and reused
@@ -334,7 +336,7 @@ class DMModel():
                           observation_model=self.observation_model,
                           observation_parameters=[self.observation_parameters, self.__observation_dynamic_inputs],
                           responses=self.responses, observed=self.outcomes, outcomes=self.outcomes, time=self.time,
-                          n_subjects=self.n_subjects, n_runs=self.n_runs, hierarchical=False, mle=mle,
+                          n_subjects=self.n_subjects, n_runs=self.n_runs, hierarchical=hierarchical, mle=mle,
                           logp_method=self.logp_method)
 
             self._DMpy_model = m
@@ -380,6 +382,9 @@ class DMModel():
 
         allowed_methods = ['MLE', 'MAP', 'Variational', 'MCMC', 'mle', 'map', 'variational', 'mcmc']
 
+        if recovery:
+            self._recovery_run = False
+
         # Load data
         subjects, n_runs, responses, self.sims, loaded_outcomes = load_data(responses, exclude=exclude)
 
@@ -422,7 +427,8 @@ class DMModel():
 
         time = np.tile(np.arange(0, outcomes.shape[0]), (outcomes.shape[1], 1)).T
 
-        if self._pymc3_model is None or self._fit_method != fit_method.lower() or n_subjects != self.n_subjects:
+        if self._pymc3_model is None or self._fit_method != fit_method.lower() or n_subjects \
+                != self.n_subjects or self._hierarchical != hierarchical:
 
             # create model if it doesn't exist, the fitting method has been changed, or number of subjects has changed
             # turn outcomes and responses into shared variables
@@ -432,7 +438,7 @@ class DMModel():
             self.time = theano.shared(time)
             self.n_subjects = n_subjects
             self.n_runs = theano.shared(n_runs)
-            self._create_model(mle=mle)
+            self._create_model(mle=mle, hierarchical=hierarchical)
 
         self.responses.set_value(responses)
         self.outcomes.set_value(outcomes)
@@ -440,6 +446,7 @@ class DMModel():
         self.n_subjects = n_subjects
         self.n_runs.set_value(n_runs)
         self._fit_method = fit_method.lower()
+        self._hierarchical = hierarchical
 
         # run fitting method
 
@@ -462,6 +469,9 @@ class DMModel():
         else:
             raise ValueError("Invalid fitting method provided ({0}). Fit method should be one of {1}"
                              .format(fit_method, allowed_methods))
+
+        if recovery:
+            self._recovery_run = True
 
 
 
@@ -763,10 +773,10 @@ class DMModel():
                         mean = [i.mean for i in self.observation_parameters if i.name == p]
                         self.sim_observation_parameters[p] = np.repeat(mean, n_runs * n_subjects)
 
-        if not any([isinstance(i, list) and len(i) > 1 for i in learning_parameters.values()]):
-            single_parameter_values = True  # temporary(ish) solution for shape problem with single values
-        else:
-            single_parameter_values = False
+        # if not any([isinstance(i, list) and len(i) > 1 for i in learning_parameters.values()]):
+        #     single_parameter_values = True  # temporary(ish) solution for shape problem with single values
+        # else:
+        #     single_parameter_values = False
 
 
         # Create parameter combinations
@@ -1142,9 +1152,13 @@ class DMModel():
                                     (self.sim_learning_parameters.keys(), p_combinations),
                                     (self.sim_observation_parameters.keys(), p_combinations))
 
+        self._recovery_run = False
+
         return self.simulated, output_file
 
     def recovery(self):
+
+        # TODO create recovery class to store outputs?
 
         if self.sims is None:
             raise AttributeError("Response file provided for model fitting does not include simulated parameter values")
@@ -1155,7 +1169,8 @@ class DMModel():
         sns.set_palette("deep")
         self.sims = self.sims.reset_index(drop=True)
         fit_params = [i for i in self.parameter_table.columns if not 'sd_' in i and not 'Subject' in i]
-        self.parameter_table = pd.merge(self.parameter_table, self.sims, on='Subject')
+        if not self._recovery_run:
+            self.parameter_table = pd.merge(self.parameter_table, self.sims, on='Subject')
         print "Performing parameter recovery tests..."
         parameter_values = []
         parameter_values_sim = []
@@ -1175,7 +1190,12 @@ class DMModel():
             else:
                 ax = axarr
 
-            sns.regplot(self.parameter_table[p.replace('mean_', '') + '_sim'], self.parameter_table[p], ax=ax)
+            if self._fit_method in ['variational', 'Variational', 'mcmc', 'MCMC']:
+                # marker size proportional to SD if using variational or MCMC
+                sns.regplot(self.parameter_table[p.replace('mean_', '') + '_sim'], self.parameter_table[p], ax=ax,
+                            scatter_kws={'s': self.parameter_table[p.replace('mean_', 'sd_')] * 500})
+            else:
+                sns.regplot(self.parameter_table[p.replace('mean_', '') + '_sim'], self.parameter_table[p], ax=ax)
             eq_line_range = np.arange(np.min([ax.get_ylim()[0], ax.get_xlim()[0]]),
                                       np.min([ax.get_ylim()[1], ax.get_xlim()[1]]), 0.01)
             ax.plot(eq_line_range, eq_line_range, linestyle='--', color='black')
