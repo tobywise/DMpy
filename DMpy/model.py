@@ -215,8 +215,8 @@ class _PyMCModel(Continuous):
         """
 
         # begin awful hack - there is probably a better way to get values on trial+1 while retaining initial value on t = 0
-        self.static_parameters_reshaped = [np.repeat(i, self.n_runs).astype(np.float64) for i in self.static_parameters]
-        self.dynamic_parameters_reshaped = [np.repeat(i, self.n_runs.astype(np.float64)) for i in self.dynamic_parameters]
+        self.static_parameters_reshaped = [np.repeat(i, self.n_runs).astype('float64') for i in self.static_parameters]
+        self.dynamic_parameters_reshaped = [np.repeat(i, self.n_runs.astype('float64')) for i in self.dynamic_parameters]
         if self.observation_parameters[0] is not None:
             self.observation_parameters_reshaped = [np.repeat(i.pymc_distribution, self.n_runs) for i in self.observation_parameters]
         else:
