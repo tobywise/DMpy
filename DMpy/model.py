@@ -1113,7 +1113,7 @@ class DMModel():
         # Call the function
         sim_data = self._simulate_function(outcomes, time, *(model_inputs + sim_static +
                                                              [i for i in outputs_info if i is not None] +
-                                                             sim_observation), allow_input_downcast=True)
+                                                             sim_observation))
 
         # Turn the outputs into a dictionary with return names as keys
         return_names = self.__learning_returns + self.__observation_returns
@@ -1224,9 +1224,9 @@ class DMModel():
         outputs_info = [np.array([i]) if not isinstance(i, np.ndarray) and i is not None else i for i in outputs_info]
 
         # define theano tensors
-        time_theano = T.matrix("time")
-        outcomes_theano = T.matrix("outcomes")
-        model_inputs_theano = [T.matrix("model_input_{0}".format(n)) for n in range(len(model_inputs))]
+        time_theano = T.matrix("time", dtype='float64')
+        outcomes_theano = T.matrix("outcomes", dtype='float64')
+        model_inputs_theano = [T.matrix("model_input_{0}".format(n), dtype='float64') for n in range(len(model_inputs))]
         sim_static_theano = []
         outputs_info_theano = []
         sim_observation_theano = []
