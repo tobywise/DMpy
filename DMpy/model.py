@@ -365,7 +365,6 @@ class DMModel():
         self._hierarchical = False
         self.theano_model_inputs = []
         self.logp_args = logp_args
-        self.DIC = None
         self.WAIC = None
         self.responses = None
         if self.logp_args is None:
@@ -780,26 +779,21 @@ class DMModel():
         self.log_likelihood, self.BIC, self.AIC = model_fit(self._pymc3_model.logp_nojac, self.map_estimate,
                                                             self._pymc3_model.vars, self.outcomes, self.n_subjects)
 
-        self.DIC = None
         self.WAIC = None
         end = timer()
         print "Finished model fitting in {0} seconds".format(end-start)
 
 
     def fit_stats(self):
+        print "FIT", self.fit_complete
+        if self.WAIC is None and self.fit_complete:
 
-        if self.DIC is None and self.fit_complete:
-
-            print "Calculating DIC..."
-            self.DIC = pm.dic(self.trace, self._pymc3_model)
-            print "DIC = {0}".format(self.DIC)
             print "Calculating WAIC..."
             self.WAIC = pm.waic(self.trace, self._pymc3_model)[0]
             print "WAIC = {0}".format(self.WAIC)
             print "Calculated fit statistics"
 
         elif self.fit_complete:
-            print "DIC = {0}".format(self.DIC)
             print "WAIC = {0}".format(self.WAIC)
 
         else:
