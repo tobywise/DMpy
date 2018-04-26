@@ -785,8 +785,8 @@ class DMModel():
 
 
     def fit_stats(self):
-        print "FIT", self.fit_complete
-        if self.WAIC is None and self.fit_complete:
+
+        if self.WAIC is None and not self.fit_complete:
 
             print "Calculating WAIC..."
             self.WAIC = pm.waic(self.trace, self._pymc3_model)[0]
