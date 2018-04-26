@@ -1238,7 +1238,7 @@ class DMModel():
                 outputs_info_theano.append(T.vector("outputs_info_{0}".format(n), dtype='float64'))
 
         for n, i in enumerate(sim_static):
-            sim_static_theano.append(T.vector("sim_static_{0}".format(n)))
+            sim_static_theano.append(T.vector("sim_static_{0}".format(n), dtype='float64'))
 
         for n, i in enumerate(sim_observation):
             sim_observation_theano.append(T.vector("sim_observation_{0}".format(n), dtype='float64'))
