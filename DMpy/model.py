@@ -1113,7 +1113,7 @@ class DMModel():
         # Call the function
         sim_data = self._simulate_function(outcomes, time, *(model_inputs + sim_static +
                                                              [i for i in outputs_info if i is not None] +
-                                                             sim_observation))
+                                                             sim_observation), allow_input_downcast=True)
 
         # Turn the outputs into a dictionary with return names as keys
         return_names = self.__learning_returns + self.__observation_returns
