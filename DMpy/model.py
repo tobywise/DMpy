@@ -789,7 +789,7 @@ class DMModel():
         if self.WAIC is None and not self.fit_complete:
 
             print "Calculating WAIC..."
-            self.WAIC = pm.waic(self.trace, self._pymc3_model)[0]
+            self.WAIC = pm.waic(self.trace, self._pymc3_model).WAIC
             print "WAIC = {0}".format(self.WAIC)
             print "Calculated fit statistics"
 
