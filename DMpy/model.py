@@ -1235,7 +1235,7 @@ class DMModel():
             if i is None:
                 outputs_info_theano.append(None)
             else:
-                outputs_info_theano.append(T.vector("outputs_info_{0}".format(n)))
+                outputs_info_theano.append(T.vector("outputs_info_{0}".format(n), dtype='float64'))
 
         for n, i in enumerate(sim_static):
             sim_static_theano.append(T.vector("sim_static_{0}".format(n)))
