@@ -18,11 +18,15 @@ Learning model functions should take both dynamic and static parameters, defined
 * Static parameters: Parameters which take fixed values at all time steps. For example, a Rescorla-Wagner model has a fixed learning rate across all trials.
 
 When specifying models, the function should take arguments in the following order:
-trial outcome, dynamic parameters, static parameters
+trial outcome, trial number, other inputs to the model, dynamic parameters, static parameters
+
+Note that the trial number doesn't necessarily need to be used, but does need to be provided as an argument.
+
+Other inputs to the model are anything else the model needs to consider other than the outcome or time (represented by trial number). For example, if a subject is learning about two stimuli, the outcomes of the second stimuli could be provided here.
 
 The function must return any values that are entered into the observation model, such as the estimated value of a stimulus
 at the current time step, and any other estimated values that are re-entered into the model at the next step. It is
-also possible to return any other values from the function, which will be givenas outputs when simulating models.
+also possible to return any other values from the function, which will be given as outputs when simulating models.
 For example, it might be desirable to return trial-by-trial prediction errors to combine with neuroimaging.
 
 The function must return a tuple of the form:
@@ -36,7 +40,7 @@ a prediction error, weighted by a learning rate.
 
 .. code-block:: python
 
-        def rescorla_wagner(o, v, alpha):
+        def rescorla_wagner(o, t, v, alpha):
 
             pe = o - v
             value = v + alpha * pe
@@ -70,6 +74,8 @@ In place of:
 Although translating from python/numpy to Theano is a little awkward, the theano documentation is clear and it's typically not difficult to find the desired function.
 
 It currently isn't possible to refer to values prior to t-1.
+
+Models can also take additional inputs
 
 
 Observation models

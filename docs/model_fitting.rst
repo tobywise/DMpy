@@ -80,6 +80,12 @@ The ``fit()`` method takes additional arguments that can be used to alter how th
 
 Specific subjects can be easily excluded from fitting by supplying their ID (as given in the response file) to the ``exclude`` argument. Multiple subjects can be excluded by providing a list of subject IDs.
 
+Additional model inputs (such as outcomes for other stimuli) can be provided by including them as columns in the response file provided to the fitting method. The ``model_inputs`` argument can then be used to specify which columns will be used. This should be provided as a list, even if only one column is provided. For example:
+
+.. code-block:: python
+
+        model.fit(response_file, fit_method='MAP', model_inputs=['stimulus_B_outcomes', 'stimulus_C_outcomes'])
+
 
 Hierarchical model fitting
 --------------------------

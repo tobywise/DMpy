@@ -1,11 +1,14 @@
 import numpy as np
 
 """
-Observation models should return (probability, any other outputs to simulate (e.g. modulated beta))
+Observation models should return (probability, other quantities... )
 """
 
 def softmax(v, b):
-    return ((b * v).exp() / ((b * v).exp() + (b * (1 - v)).exp()), [])
+
+    prob = (b * v).exp() / ((b * v).exp() + (b * (1 - v)).exp())
+
+    return (prob, )
 
 
 def softmax_ml(v, c, b, m):

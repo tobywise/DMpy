@@ -48,6 +48,8 @@ If the combinations argument is set to true, data will be simulated from every c
 
 The outcomes provided to the simulate method can take the form of an array with different outcomes for each subject (i.e. an array of the shape n_trials, n_subjects), or if a one-dimensional outcome array is provided this will be used for each combination of parameter values.
 
+Simulations can also be run using a dataframe.
+
 
 Parameter recovery
 ------------------

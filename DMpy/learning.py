@@ -163,9 +163,9 @@ def hgf_binary(o, t, mu1, mu2, mu3, pi2, pi3, rho2, rho3, ka2, om2, om3):
     da3 = (1. / pi3 + (mu3 - muhat3) ** 2) * pihat3 -1
 
     # add mu (this is the updated muhat1 after seeing the outcome on this trial, and is necessary for DMpy)
-    mu1 = T.nnet.sigmoid(mu2 + t * rho2)
+    value = T.nnet.sigmoid(mu2 + t * rho2)
 
-    return (mu1, mu2, mu3, pi2, pi3, da1, da2, da3)
+    return (value, mu2, mu3, pi2, pi3, da1, da2, da3)
 
 
 def dual_lr_qlearning(o, t, v, alpha_p, alpha_n):
