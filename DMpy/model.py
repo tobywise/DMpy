@@ -634,7 +634,7 @@ class DMModel():
             if plot:
                 traceplot(self.trace)
 
-        self.fit_values = pm.df_summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
+        self.fit_values = pm.summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
 
         print "\nPARAMETER ESTIMATES\n"
 
@@ -693,7 +693,7 @@ class DMModel():
         if plot:
             traceplot(self.trace)
 
-        self.fit_values = pm.df_summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
+        self.fit_values = pm.summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
         self.fit_complete = True
 
         print "\nPARAMETER ESTIMATES\n"
