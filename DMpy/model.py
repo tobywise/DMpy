@@ -506,7 +506,7 @@ class DMModel():
 
         if outcomes is None and loaded_outcomes is None:
             raise ValueError("No outcomes provided. Please provide outcomes either as an array or as a column in "
-                             "the response file")
+                             "the response file named 'Outcome'")
 
         responses = responses.astype(float)
         if response_transform is not None:
@@ -1552,7 +1552,7 @@ class SimulationResults():
                 plt.tight_layout()
 
 
-    def plot_against_true(self, subjects=None):
+    def plot_against_true(self, subjects=None, runs=None, show_outcomes=True):
 
         """
         Plots results of simulation against actual subjects' behaviour
@@ -1564,37 +1564,60 @@ class SimulationResults():
 
         """
 
+        if isinstance(subjects, str) or isinstance(subjects, int):
+            subjects = [subjects]
+
+        if isinstance(runs, int):
+            runs = [runs]
+
         if not self.fit_complete:
             raise AttributeError("Model not fit, unable to plot simulated against true values")
 
         else:
+            if subjects is None:
+                n_plot_subjects = self.n_subjects
+                subjects = self.results.Subject.unique()
+            else:
+                n_plot_subjects = len(subjects)
 
-            fig, ax = plt.subplots(self.n_subjects, self.n_runs, figsize=(6 * self.n_runs, 1.5 * self.n_subjects))
+            if runs is None:
+                n_plot_runs = int(self.n_runs)
+                runs = range(int(self.n_runs))
+            else:
+                n_plot_runs = len(runs)
+            print n_plot_subjects, n_plot_runs
+            fig, ax = plt.subplots(n_plot_subjects, n_plot_runs, figsize=(6 * n_plot_runs, 1.5 * n_plot_subjects))
+            if len(ax.shape) < 2:
+                if n_plot_subjects == 1:
+                    ax = np.expand_dims(ax, axis=0)
+                elif n_plot_runs == 1:
+                    ax = np.expand_dims(ax, axis=1)
 
-            for n, sub in enumerate(self.results.Subject.unique()):
+            for n, sub in enumerate(subjects):
 
-                if subjects is None or sub in subjects:
+                sub_df = self.results[self.results.Subject == sub].reset_index()
 
-                    for run in range(self.n_runs):
+                for nn, run in enumerate(runs):
 
-                        # Plot values
-                        ax[n, run].plot(self.results[self.response_variable][self.results.Run == run], label='Model')
-                        ax[n, run].plot(self.results['Response'][self.results.Run == run], label='Data')  # TODO add responses to sim dataframe
+                    run_df = sub_df[sub_df.Run == run].reset_index()
 
-                        ax[n, run].set_title('{0} - Run {1}'.format(sub, run), fontweight='bold')
+                    # Plot values
+                    ax[n, nn].plot(run_df[self.response_variable], label='Model', color='tab:orange')
+                    ax[n, nn].plot(run_df['True_response'], label='Data', color='tab:blue')
 
-                        # Plot task outcomes
-                        ax[n, run].scatter(np.arange(0, self.results[self.response_variable][self.results.Run == run]),
-                                           self.results['Outcome'][self.results.Run == run], color='#72a23b',
-                                           alpha=0.5, label='Outcomes')
+                    ax[n, nn].set_title('{0} - Run {1}'.format(sub, run), fontweight='bold')
+                    # Plot task outcomes
+                    if show_outcomes:
+                        ax[n, nn].scatter(np.arange(0, len(run_df[self.response_variable])),
+                                           run_df['Outcome'], edgecolors='#353535', facecolors='none',
+                                           alpha=0.5, label='Outcomes', linewidth=1)
 
-                        # Set x and y limits
-                        ax[n, run].set_ylim(np.min(self.results[self.response_variable][self.results.Run == run]) - 0.5,
-                                            np.max(self.results[self.response_variable][self.results.Run == run]) + 0.2)
-                        ax[n, run].set_xlim(0, self.results[self.response_variable][self.results.Run == run].shape[0])
+                    # Set x and y limits
+                    ax[n, nn].set_ylim(np.min(run_df['Outcome']) - 0.2,
+                                        np.max(run_df['Outcome']) + 0.2)
+                    ax[n, nn].set_xlim(0, run_df[self.response_variable].shape[0])
+                    ax[n, nn].legend(frameon=True, fancybox=True)
+                    ax[n, nn].set_xlabel("Trial")
 
-                        ax[n, run].legend(frameon=True, fancybox=True)
-
-                        ax[n, run].set_xlabel("Trial")
 
             plt.tight_layout()
