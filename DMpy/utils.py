@@ -224,7 +224,7 @@ def parameter_table(df_summary, subjects, logp_rvs):
     return df_summary
 
 
-def load_data(data_file, exclude=None, additional_inputs=None):
+def load_data(data_file, exclude_subjects=None, exclude_runs=None, additional_inputs=None):
 
     # TODO rewrite all of this because it's a mess
 
@@ -236,25 +236,35 @@ def load_data(data_file, exclude=None, additional_inputs=None):
     else:
         additional_inputs = additional_inputs
 
-    try:
-        data = pd.read_csv(data_file)
-    except ValueError:
-        raise ValueError("Responses are not in the correct format, ensure they are provided as a .csv or .txt file")
+    if not isinstance(data_file, pd.DataFrame):
+        try:
+            data = pd.read_csv(data_file)
+        except ValueError:
+            raise ValueError("Responses are not in the correct format, ensure they are provided as a .csv or .txt file")
+    else:
+        data = data_file
 
     if 'Subject' not in data.columns or 'Response' not in data.columns:
         raise ValueError("Data file must contain the following columns: Subject, Response")
 
-    if exclude is not None:
-        if not isinstance(exclude, list):
-            exclude = [exclude]
-        data = data[~data.Subject.isin(exclude)]
-        print "Excluded subjects: {0}".format(exclude)
+    if exclude_subjects is not None:
+        if not isinstance(exclude_subjects, list):
+            exclude_subjects = [exclude_subjects]
+        data = data[~data.Subject.isin(exclude_subjects)]
+        print "Excluded subjects: {0}".format(exclude_subjects)
 
     subjects = np.unique(data.Subject)
     n_subjects = len(subjects)
 
     if 'Run' in data.columns and np.max(data['Run']) > 0:
         n_runs = len(np.unique(data['Run']))
+
+        if exclude_runs is not None:
+            if not isinstance(exclude_runs, list):
+                exclude_runs = [exclude_runs]
+            data = data[~data.Run.isin(exclude_runs)]
+            print "Excluded runs: {0}".format(exclude_runs)
+
     else:
         n_runs = 1
 
@@ -435,20 +445,16 @@ def simulated_dataframe(simulation_results, outcomes, responses, model_inputs, n
     else:
         subject_ids = np.repeat(subjects, n_runs * n_trials)
         run_ids = np.tile(np.repeat(np.arange(0, n_runs), n_trials), n_subjects)
-        print len(run_ids)
-        print len(simulated_df)
-        print n_runs
-        print n_trials
-        print n_subjects
 
     # Add subject and run IDs to the dataframe
     simulated_df['Subject'] = subject_ids
     simulated_df['Run'] = run_ids
 
     # Add outcomes and other inputs
-    simulated_df['Outcome'] = flatten_simulated(outcomes)
+    simulated_df['Outcome'] = outcomes.flatten(order='F')
+
     if fit_complete:
-        simulated_df['True_response'] = flatten_simulated(responses)
+        simulated_df['True_response'] = responses.flatten()
     model_inputs = [flatten_simulated(i) for i in model_inputs]
     for n, i in enumerate(model_inputs):
         simulated_df['sim_model_input_{0}'.format(n)] = i
@@ -711,6 +717,9 @@ def load_data_for_simulation(outcomes, model_inputs=()):
             n_subjects = len(outcome_df.Subject.unique())
 
         # Check additional inputs
+        if not isinstance(model_inputs, list):
+            raise TypeError("Model inputs should be provided as a list, provided type {0}".format(type(model_inputs)))
+
         for n, i in enumerate(model_inputs):
             # Loop over column names and replace them with values in ndarray format
             if not isinstance(i, str):

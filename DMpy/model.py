@@ -72,9 +72,10 @@ def _initialise_parameters(learning_parameters, observation_parameters, n_subjec
     learning_parameter_names = []
 
     for n, p in enumerate(learning_parameters):
-        learning_parameters[n] = generate_pymc_distribution(p, n_subjects=n_subjects, mle=mle,
-                                                                 hierarchical=hierarchical)
-        learning_parameter_names.append(p.name)
+        if not p.name in learning_parameter_names:
+            learning_parameters[n] = generate_pymc_distribution(p, n_subjects=n_subjects, mle=mle,
+                                                                     hierarchical=hierarchical)
+            learning_parameter_names.append(p.name)
 
     dynamic_parameters = []
     static_parameters = []
@@ -243,7 +244,7 @@ class _PyMCModel(Continuous):
 
         except ValueError as e:
             if "None as outputs_info" in e.message:
-                # Make this error more interpretable
+                # TODO Make this error more interpretable
                 raise ValueError("Mismatch between number of dynamic outputs and number of dynamic inputs. \n"
                                  "Make sure function outputs and inputs match (i.e. all dynamic inputs have a corresponding\n"
                                  " returned value, and make sure dynamic parameters are correctly set to be dynamic and\n"
@@ -252,6 +253,7 @@ class _PyMCModel(Continuous):
                 raise e
 
         except TypeError as e:
+            # Translate PyMC3 / theano error messages
             if 'takes exactly' in e.message:
                 # Catch incorrect number of arguments errors
                 n_inputs_provided = len(self.model_inputs)
@@ -263,6 +265,16 @@ class _PyMCModel(Continuous):
                                                                  2 + n_inputs_provided + n_dynamic_provided + n_static_provided,
                                                                  n_inputs_provided,
                                                                  n_dynamic_provided + 1, n_static_provided))
+            elif 'Wrong number of inputs for LE.make_node' in e.message:
+                got = re.search('(?<=got )\d+', e.message).group()
+                expected = re.search('(?<=expected )\d+', e.message).group()
+                raise TypeError("A theano function has been given the wrong number of arguments (you provided {0} and "
+                                "it expected {1}. Check all theano functions used in the model (e.g. switch, comparisons)"
+                                " have the correct number of inputs".format(got, expected))
+            elif 'instance' in e.message:
+                raise TypeError('{0}\n'
+                                'This probably means a variable in the model function is not defined. '
+                                'Check for typos in argument and variable names')
             else:
                 raise e
 
@@ -327,7 +339,7 @@ class _PyMCModel(Continuous):
             self.logp_vars = [i.name for i in self.vars if i not in model_vars]
 
         responses_nonan = T.switch(T.isnan(self.responses), 0., self.responses)
-        logp = T.sum(self.logp_distribution.logp(responses_nonan))
+        logp = T.sum(self.logp_distribution.logp(self.responses))
 
         return logp
 
@@ -466,8 +478,8 @@ class DMModel():
 
 
     def fit(self, responses, outcomes=None, fit_method='MLE', hierarchical=False, plot=True, fit_stats=False, recovery=False,
-            exclude=None, fit_kwargs=None, sample_kwargs=None, suppress_table=False, model_inputs=None,
-            response_transform=None):
+            exclude_subjects=None, exclude_runs=None, fit_kwargs=None, sample_kwargs=None, suppress_table=False,
+            model_inputs=None, response_transform=None):
 
         """
         General fitting method.
@@ -485,7 +497,8 @@ class DMModel():
             recovery: If simulated parameter values are provided in the response file, will calculate correlations between
                       simulated and estimated parameters and produce correlation plots to assess parameter recovery success.
                       Default = True
-            exclude: List of subject IDs to exclude from model fitting
+            exclude_subjects: List of subject IDs to exclude from model fitting
+            exclude_runs: List of runs to exclude from model fitting
             fit_kwargs: Dictionary of keyword arguments passed to underlying MLE, MAP and variational fitting functions. See
             PyMC3 documentation for more details (http://docs.pymc.io/notebooks/getting_started.html)
             sample_kwargs: Dictionary of keyword arguments passed to underlying variational and MCMC sampling functions.
@@ -501,8 +514,10 @@ class DMModel():
             self._recovery_run = False
 
         # Load data
-        subjects, n_runs, responses, self.sims, loaded_outcomes, self.model_inputs = load_data(responses, exclude=exclude,
-                                                                            additional_inputs=model_inputs)
+        subjects, n_runs, responses, self.sims, \
+        loaded_outcomes, self.model_inputs = load_data(responses, exclude_subjects=exclude_subjects,
+                                                       exclude_runs=exclude_runs,
+                                                       additional_inputs=model_inputs)
 
         if outcomes is None and loaded_outcomes is None:
             raise ValueError("No outcomes provided. Please provide outcomes either as an array or as a column in "
@@ -600,9 +615,6 @@ class DMModel():
                              .format(fit_method, allowed_methods))
 
 
-
-
-
     def _fit_MCMC(self, hierarchical=False, plot=True, fit_stats=False, recovery=True, suppress_table=False,
                   **kwargs):
 
@@ -635,11 +647,10 @@ class DMModel():
 
         self.fit_values = pm.summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
 
-        print "\nPARAMETER ESTIMATES\n"
-
         self.parameter_table = parameter_table(pm.summary(self.trace), self.subjects, self._DMpy_model.distribution.logp_vars)
 
         if not suppress_table:
+            print "\nPARAMETER ESTIMATES\n"
             print self.parameter_table
 
         if recovery and self.sims is not None:
@@ -693,13 +704,11 @@ class DMModel():
             traceplot(self.trace)
 
         self.fit_values = pm.summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
-        self.fit_complete = True
-
-        print "\nPARAMETER ESTIMATES\n"
 
         self.parameter_table = parameter_table(pm.summary(self.trace), self.subjects, self._DMpy_model.distribution.logp_vars)
 
         if not suppress_table:
+            print "\nPARAMETER ESTIMATES\n"
             print self.parameter_table
 
         if recovery and self.sims is not None:
@@ -708,6 +717,8 @@ class DMModel():
         if fit_stats:
             # these seem to take a lot of time...
             self.fit_stats()
+
+        self.fit_complete = True
 
         # self.log_likelihood, self.BIC, self.AIC = model_fit(rl.logp, self.fit_values, rl.vars)
         end = timer()
@@ -764,8 +775,6 @@ class DMModel():
 
         self.fit_values = untransformed_params
 
-        print "\nPARAMETER ESTIMATES\n"
-
         self.parameter_table = pd.DataFrame(self.fit_values)
         self.parameter_table['Subject'] = self.subjects
         self.parameter_table.sort_values('Subject')
@@ -774,6 +783,7 @@ class DMModel():
             self.recovery_correlations = self.recovery()
 
         if not suppress_table:
+            print "\nPARAMETER ESTIMATES\n"
             print self.parameter_table
 
         self.log_likelihood, self.BIC, self.AIC = model_fit(self._pymc3_model.logp_nojac, self.map_estimate,
@@ -950,6 +960,13 @@ class DMModel():
             raise ValueError("No parameter values provided and model has not been fit. Must explicitly "
                              "provide parameter values for simulation or fit the model first")
 
+        # Turn the outputs into a dictionary with return names as keys and check that the response variable exists
+        return_names = self.__learning_returns + self.__observation_returns
+
+        if response_variable not in return_names:
+            raise KeyError("The provided response variable ('{0}') is not one of the outputs returned by either the "
+                           "learning or observation model. Possible outputs are {1}".format(response_variable, return_names))
+
         # Using user-defined parameter values & outcomes
 
         if not self.fit_complete:  # We're using user-specified parameter values
@@ -1005,7 +1022,7 @@ class DMModel():
                 if p.replace('mean_', '') in learning_parameter_names:
                     self.sim_learning_parameters[p.replace('mean_', '')] = np.repeat(self.parameter_table[p].values, n_runs)
 
-                elif observation_parameter_names is not None and p in observation_parameter_names:
+                elif observation_parameter_names is not None and p.replace('mean_', '') in observation_parameter_names:
                     self.sim_observation_parameters[p.replace('mean_', '')] = np.repeat(self.parameter_table[p].values, n_runs)
 
             for p in learning_parameter_names:
@@ -1078,7 +1095,6 @@ class DMModel():
 
 
         # Ensure outcomes and additional model inputs are the right format
-
         if outcomes.shape[1] < p_combinations.shape[0]:
             warnings.warn("Fewer outcome lists than simulated subjects, attempting to use same outcomes for each "
                           "subject (number of outcome lists = {0}, number of subjects = {1}".format(outcomes.shape[0],
@@ -1087,7 +1103,7 @@ class DMModel():
                 # Try to repeat the outcomes we have
                 outcomes = np.tile(outcomes, (1, p_combinations.shape[0] / outcomes.shape[1]))
                 for n in range(len(model_inputs)):
-                    model_inputs[n] = np.tile(model_inputs[n], (p_combinations.shape[0] / model_inputs[n].shape[1], 1))
+                    model_inputs[n] = np.tile(model_inputs[n], (1, p_combinations.shape[0] / model_inputs[n].shape[1]))
             except:
                 raise ValueError("Unable to repeat outcome arrays to match number of subjects, make sure to either "
                                  "provide outcomes for each subject in a dataframe or make sure the number of "
@@ -1096,6 +1112,7 @@ class DMModel():
 
         if not outcomes.shape[1] == p_combinations.shape[0]:
             raise ValueError("Number of outcome lists provided does not match number of subjects")
+
 
         # Create theano shared variables and scan function
 
@@ -1115,8 +1132,6 @@ class DMModel():
                                                              [i for i in outputs_info if i is not None] +
                                                              sim_observation))
 
-        # Turn the outputs into a dictionary with return names as keys
-        return_names = self.__learning_returns + self.__observation_returns
 
         # Rename duplicate return names
         for name, count in Counter(return_names).items():
@@ -1128,6 +1143,7 @@ class DMModel():
         assert len(return_names) == len(sim_data), 'Unequal number of return names and simulated outputs, {0} returns,' \
                                                    ' {1} simulated outputs'.format(len(return_names), len(sim_data))
         self._simulation_results_dict = OrderedDict(zip(self.__learning_returns + self.__observation_returns, sim_data))
+
 
         # Check for nans and flatten
         for r, v in self._simulation_results_dict.items():
@@ -1148,6 +1164,7 @@ class DMModel():
                                                       self.sim_learning_parameters,  self.sim_observation_parameters,
                                                       self.fit_complete)
 
+        # Create choices
 
         # Add noise to the response variable
         if noise_sd > 0 or noise_mean > 1:
@@ -1159,18 +1176,24 @@ class DMModel():
                                                                     noise_mean, noise_sd, lower_bound=np.min(outcomes),
                                                                     upper_bound=np.max(outcomes))
 
-        # Create choices
-
+        # Set response variable
         if self.logp_function == 'bernoulli' or return_choices:
-            self.simulation_results['choices'] = generate_choices2(self.simulation_results[response_variable])
+            self.simulation_results['Response'] = generate_choices2(self.simulation_results[response_variable])
+
+        else:
+            self.simulation_results['Response'] = self.simulation_results[response_variable]
 
         self._recovery_run = False
+
+        # Plots
 
         if plot:
             self.simulation.plot()
 
         if plot_against_true:
             self.simulation.plot_against_true()
+
+        # Save to csv
 
         print "Saving simulated results to {0}".format(output_file)
         if len(output_file):
@@ -1180,14 +1203,15 @@ class DMModel():
                                             response_variable, self.__learning_returns, self.__observation_returns,
                                             outcomes, n_subjects, n_runs, self.fit_complete, self.responses)
 
-        print "Finished simulating"
-
         return self.simulation, output_file
 
 
     def _create_parameter_combinations(self, combinations, parameter_values, n_runs, n_subjects, params_from_fit):
 
         if combinations:  # create combinations of parameters
+            # Remove any duplicates
+            for n, i in enumerate(parameter_values):
+                parameter_values[n] = list(set(i))
             p_combinations = np.array(list(product(*parameter_values)))  # get product
             n_combinations = p_combinations.shape[0]
             p_combinations = np.repeat(p_combinations, n_runs, axis=0)
@@ -1209,6 +1233,8 @@ class DMModel():
         # New n_subjects = number of subjects * number of parameter combinations
         if not params_from_fit:
             n_subjects = n_combinations * n_subjects
+
+        print "Simulating data from {0} sets of parameter values".format(len(p_combinations))
 
         return p_combinations, n_subjects
 
@@ -1239,10 +1265,8 @@ class DMModel():
 
         for n, i in enumerate(sim_static):
             sim_static_theano.append(T.vector("sim_static_{0}".format(n), dtype='float64'))
-
         for n, i in enumerate(sim_observation):
             sim_observation_theano.append(T.vector("sim_observation_{0}".format(n), dtype='float64'))
-
         # sequences for scan should be in format (n_trials, n_subjects)
 
         # Run the learning model
@@ -1268,7 +1292,6 @@ class DMModel():
 
         # Combine learning and observation model outputs into a single list
         out = T.as_tensor_variable(list(value) + list(obs_outs))
-
         self._simulate_function = theano.function(inputs=[outcomes_theano, time_theano] + model_inputs_theano +
                                                          sim_static_theano +
                                                          [i for i in outputs_info_theano if i is not None] +
@@ -1492,7 +1515,8 @@ class SimulationResults():
     def plot(self, palette='blues', plot_choices=False, plot_outcomes=True, legend=True, plot_clean=False):
 
         """
-        Plots outputs from simulation. Three figures are created: 1) The response variable, 2) Outputs from the learning model, 3) Outputs from the observation model
+        Plots outputs from simulation. Three figures are created: 1) The response variable, 2) Outputs from the
+        learning model, 3) Outputs from the observation model
 
         Args:
             palette: Seaborn palette used to plot results
@@ -1516,7 +1540,7 @@ class SimulationResults():
                     # Iterate over runs
                     for run in range(self.n_runs):
 
-                        pal = sns.color_palette(palette, self.results[0].shape[1])
+                        pal = sns.color_palette(palette, self.n_subjects)
 
                         # Plot values
                         ax[n, run].plot(self.results[name][self.results.Run == run], label=name, c=pal[n])
@@ -1585,7 +1609,6 @@ class SimulationResults():
                 runs = range(int(self.n_runs))
             else:
                 n_plot_runs = len(runs)
-            print n_plot_subjects, n_plot_runs
             fig, ax = plt.subplots(n_plot_subjects, n_plot_runs, figsize=(6 * n_plot_runs, 1.5 * n_plot_subjects))
             if len(ax.shape) < 2:
                 if n_plot_subjects == 1:

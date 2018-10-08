@@ -1,6 +1,9 @@
 Installing DMpy
 """""""""""""""
 
+Windows
+-------
+
 First do
 
 conda install mkl mkl-service libpython m2w64-toolchain
@@ -20,6 +23,12 @@ C:\Anaconda2\Scripts
 Theano (which DMpy is built on top of) has a couple of requirements that need to be installed separately. This can be done easily at the terminal/command line:
 
 conda install mkl-service libpython mingw
+
+
+Linux
+-----
+
+conda install mkl theano pygpu
 
 
 
@@ -54,6 +63,11 @@ To fix this simply go to the command line (Windows) or terminal (OSX/Linux) and 
 set MKL_THREADING_LAYER=GNU
 
 Or in windows create a new environment variable in the GUI
+
+
+Or try installing MKL 2017 instead:
+conda uninstall mkl=2018
+conda install mkl=2017
 
 
 Errors post-installation

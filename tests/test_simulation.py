@@ -43,6 +43,7 @@ def example_dataframe_loaded():
 def simulated_model(obs_model, outcomes):
     obs_model.simulate(outcomes=np.vstack([outcomes, outcomes]).T, learning_parameters=dict(value=0.5, alpha=[0.3, 0.4]),
                        observation_parameters=dict(beta=[3, 4]), n_subjects=2, combinations=True)
+    print obs_model.simulation_results.Outcome
     return obs_model
 
 @pytest.fixture()
@@ -71,37 +72,37 @@ class TestParameterCombinations(object):
 
         combinations = obs_model._create_parameter_combinations(True, [[0.1, 0.2], [3, 4]], 1, 1, False)
 
-        assert combinations.shape == (4, 2)
+        assert combinations[0].shape == (4, 2)
 
     def test_combination_shape_multiple_runs(self, obs_model):
 
         combinations = obs_model._create_parameter_combinations(True, [[0.1, 0.2], [3, 4]], 2, 1, False)
 
-        assert combinations.shape == (8, 2)
+        assert combinations[0].shape == (8, 2)
 
     def test_combination_shape_multiple_subject(self, obs_model):
 
         combinations = obs_model._create_parameter_combinations(True, [[0.1, 0.2], [3, 4]], 1, 2, False)
 
-        assert combinations.shape == (8, 2)
+        assert combinations[0].shape == (8, 2)
 
     def test_pair_shape(self, obs_model):
 
         combinations = obs_model._create_parameter_combinations(False, [[0.1, 0.2], [3, 4]], 1, 1, False)
 
-        assert combinations.shape == (2, 2)
+        assert combinations[0].shape == (2, 2)
 
     def test_pair_shape_multiple_runs(self, obs_model):
 
         combinations = obs_model._create_parameter_combinations(False, [[0.1, 0.2], [3, 4]], 2, 1, False)
 
-        assert combinations.shape == (4, 2)
+        assert combinations[0].shape == (4, 2)
 
     def test_pair_shape_multiple_subjects(self, obs_model):
 
         combinations = obs_model._create_parameter_combinations(False, [[0.1, 0.2], [3, 4]], 1, 2, False)
 
-        assert combinations.shape == (4, 2)
+        assert combinations[0].shape == (4, 2)
 
     def test_value_label_order(self, obs_model, outcomes):
         # TODO test again when things aren't broken
@@ -112,9 +113,9 @@ class TestParameterCombinations(object):
                and (obs_model.sim_learning_parameters['value'] == np.array([0.5, 0.5, 0.5, 0.5]))
                and (obs_model.sim_observation_parameters['beta'] == np.array([3, 4, 3, 4])))
 
-    def test_parameter_combinations_fit_model(self, fit_model):
-
-        ##
+    # def test_parameter_combinations_fit_model(self, fit_model):
+    #
+    #     ##
 
 
 class TestSimulatedDataFrame(object):
@@ -164,17 +165,23 @@ class TestSimulatedDataFrame(object):
         for p, v in simulated_model.sim_observation_parameters.items():
             assert(np.all(simulated_model.simulation_results[p + '_sim'].unique() == np.unique(v)))
 
-    def test_simulated_dataframe_fit_model(self):
+    def test_dataframe_outcomes_equal_input_outcomes(self, simulated_model, outcomes):
 
-        simulated_dataframe(forgetful_beta_asymmetric_model._simulation_results_dict,
-                            forgetful_beta_asymmetric_model.outcomes.eval(),
-                            forgetful_beta_asymmetric_model.model_inputs,
-                            forgetful_beta_asymmetric_model.n_runs.eval(),
-                            forgetful_beta_asymmetric_model.n_subjects,
-                            forgetful_beta_asymmetric_model.subjects,
-                            forgetful_beta_asymmetric_model.sim_learning_parameters,
-                            forgetful_beta_asymmetric_model.sim_observation_parameters,
-                            forgetful_beta_asymmetric_model.fit_complete)
+        # Take outcomes from the first subject/run and see if they equal the outcomes used as input
+
+        assert(simulated_model.simulation_results.Outcome[:len(outcomes)].tolist() == outcomes)
+
+    # def test_simulated_dataframe_fit_model(self):
+    #
+    #     simulated_dataframe(forgetful_beta_asymmetric_model._simulation_results_dict,
+    #                         forgetful_beta_asymmetric_model.outcomes.eval(),
+    #                         forgetful_beta_asymmetric_model.model_inputs,
+    #                         forgetful_beta_asymmetric_model.n_runs.eval(),
+    #                         forgetful_beta_asymmetric_model.n_subjects,
+    #                         forgetful_beta_asymmetric_model.subjects,
+    #                         forgetful_beta_asymmetric_model.sim_learning_parameters,
+    #                         forgetful_beta_asymmetric_model.sim_observation_parameters,
+    #                         forgetful_beta_asymmetric_model.fit_complete)
 
 
 def test_multiple_runs_have_same_simulated_values_combinations(simulated_model):
