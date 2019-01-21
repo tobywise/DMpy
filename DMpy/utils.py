@@ -796,3 +796,4 @@ def parameter_check(parameters, sim=False):
                     "Parameter {0} is not the correct type. Parameter values should be provided as a DMPy "
                     "Parameter instance, provided type was {1}".format(p, type(p)))
 
+

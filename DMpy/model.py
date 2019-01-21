@@ -1644,3 +1644,4 @@ class SimulationResults():
 
 
             plt.tight_layout()
+
