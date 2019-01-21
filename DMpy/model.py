@@ -1,6 +1,6 @@
 import numpy as np
 import pymc3 as pm
-from pymc3.distributions import Continuous
+from pymc3.distributions import Continuous, draw_values, generate_samples
 from theano import scan, function, printing
 import theano.tensor as T
 import theano
@@ -25,6 +25,7 @@ theano.config.compute_test_value = "off"
 sns.set_style("white")
 sns.set_palette("Set1")
 
+
 # TODO infer logp method from data
 # TODO use observation model only in cases where there is no learning!
 # TODO BUG - changing logp method doesn't work without reloading model instance
@@ -47,8 +48,8 @@ sns.set_palette("Set1")
 # TODO subject specific model fits (DIC etc)
 
 
-def _initialise_parameters(learning_parameters, observation_parameters, n_subjects, n_runs, mle, hierarchical):
-
+def _initialise_parameters(learning_parameters, observation_parameters, n_subjects, n_runs, mle, hierarchical,
+                           offset, minibatch=0, total_size=0):
     """
     Assigns PyMC3 distributions to provided parameters. PyMC3 distribution is stored in the .pymc_distribution attribute
 
@@ -74,7 +75,8 @@ def _initialise_parameters(learning_parameters, observation_parameters, n_subjec
     for n, p in enumerate(learning_parameters):
         if not p.name in learning_parameter_names:
             learning_parameters[n] = generate_pymc_distribution(p, n_subjects=n_subjects, mle=mle,
-                                                                     hierarchical=hierarchical)
+                                                                hierarchical=hierarchical, offset=offset,
+                                                                minibatch=minibatch, total_size=total_size)
             learning_parameter_names.append(p.name)
 
     dynamic_parameters = []
@@ -91,12 +93,16 @@ def _initialise_parameters(learning_parameters, observation_parameters, n_subjec
         else:
             static_parameters.append(p.pymc_distribution)
 
+        p.pymc_distribution.dmpy_name = p.name
+
     if observation_parameters[0] is not None:
         for n, p in enumerate(observation_parameters):
 
             if not p.name in learning_parameter_names:
                 observation_parameters[n] = generate_pymc_distribution(p, n_subjects=n_subjects, mle=mle,
-                                                                            hierarchical=hierarchical)
+                                                                       hierarchical=hierarchical, offset=offset,
+                                                                       minibatch=minibatch, total_size=total_size)
+                p.pymc_distribution.dmpy_name = p.name
             else:  # awkward - would be better to make shared list of parameters first then split into l/obs lists
                 for i in learning_parameters:
                     if i.name == p.name:
@@ -106,7 +112,6 @@ def _initialise_parameters(learning_parameters, observation_parameters, n_subjec
 
 
 def _add_noise(timeseries, mean, sd, lower_bound=0, upper_bound=1):
-
     noisy_timeseries = timeseries + np.random.normal(mean, sd, timeseries.shape)
 
     noisy_timeseries[noisy_timeseries > upper_bound] = upper_bound
@@ -116,16 +121,16 @@ def _add_noise(timeseries, mean, sd, lower_bound=0, upper_bound=1):
 
 
 class _PyMCModel(Continuous):
-
     """
     Instance of PyMC3 model used to fit models. Used internally by DMModel class - do not use directly.
     """
 
-    def __init__(self, learning_models, learning_parameters, observation_model, observation_parameters, responses, hierarchical,
-                 n_subjects, time, n_runs, mle=False, outcomes=None, model_inputs=None, logp_function=None, vars=None,
-                 logp_args=None, *args, **kwargs):
+    def __init__(self, context, learning_models, learning_parameters, observation_model, observation_parameters, responses,
+                 hierarchical, offset, n_subjects, time, n_runs, response_transform, mle=False, outcomes=None,
+                 model_inputs=None, logp_function=None, vars=None, minibatch=0, logp_args=None, *args, **kwargs):
         super(_PyMCModel, self).__init__(*args, **kwargs)
 
+        self.context = context
         self.fit_complete = False
         self.learning_model = learning_models[0]
         self.__learning_model_initial = learning_models[1]
@@ -138,6 +143,7 @@ class _PyMCModel(Continuous):
         self.outcomes = outcomes
         self.time = time
         self.n_runs = n_runs
+        self.response_transform = response_transform
         self.logp_function = logp_function
         self.model_inputs = model_inputs
         self.logp_args = logp_args
@@ -146,10 +152,11 @@ class _PyMCModel(Continuous):
         if self.logp_args is None:
             self.logp_args = []
 
-        self.logp_args = copy.copy(self.logp_args)  # things get messy if the same logp args are used for different models
+        self.logp_args = copy.copy(
+            self.logp_args)  # things get messy if the same logp args are used for different models
 
         for n, input in enumerate(self.model_inputs):
-            self.model_inputs[n] = dict(input=input, taps=[-1])
+            self.model_inputs[n] = dict(input=input)
 
         # TODO need to check for inconsistent number of model inputs and arguments in model function
 
@@ -162,7 +169,8 @@ class _PyMCModel(Continuous):
 
         self.dynamic_parameters, self.static_parameters, self.observation_parameters = \
             _initialise_parameters(self.learning_parameters, self.observation_parameters, self.n_subjects, self.n_runs,
-                                   mle, hierarchical)
+                                   mle, hierarchical, offset, minibatch, n_subjects)
+        # print self.dynamic_parameters[0].pymc_distribution.dmpy_name
 
         ## learning models with multiple outputs
         ## check number of dynamic parameters, if number of learning function outputs is longer, add nones to outputs info
@@ -173,9 +181,6 @@ class _PyMCModel(Continuous):
         if self.observation_model is not None:
             self.__n_observation_returns, self.__observation_return_names = n_returns(self.observation_model)
 
-        self.responses = self.responses.T
-        if self.responses.ndim == 1:
-            self.responses = self.responses.reshape(self.responses.shape[0], 1)
         if self.logp_function == 'normal':
             # Assume that if there's no observation model we're using value as our response variable
             if self.observation_model is None:
@@ -193,20 +198,22 @@ class _PyMCModel(Continuous):
             self.logp_args = {'p': 'prob'}
             self.logp_function = bernoulli_likelihood
 
-
         if not isinstance(self.logp_args, dict):
-            raise TypeError("Logp arguments should be supplied as a dictionary, supplied {0}".format(type(self.logp_args)))
+            raise TypeError(
+                "Logp arguments should be supplied as a dictionary, supplied {0}".format(type(self.logp_args)))
 
         self.logp_distribution = None
 
+    #
+    # def run_model(self, outcomes, static_parameters=(), dynamic_parameters=(), observation_parameters=()):
+    #
 
-    def get_value(self, x):
+    def get_value(self, x, static_parameters, dynamic_parameters, observation_parameters, n_runs):
 
         """
         Function to run the learning and observation models on the provided outcome data
 
-        Need to make sure order of arguments is right
-        OR figure out a way to match scan arguments to function arguments
+        # TODO Need to make sure order of arguments is right OR figure out a way to match scan arguments to function arguments
 
         Args:
             x: Outcome data
@@ -215,36 +222,32 @@ class _PyMCModel(Continuous):
             prob: Probability of choosing an option
         """
 
-        # begin awful hack - there is probably a better way to get values on trial+1 while retaining initial value on t = 0
-        self.static_parameters_reshaped = [np.repeat(i, self.n_runs).astype('float64') for i in self.static_parameters]
-        self.dynamic_parameters_reshaped = [np.repeat(i, self.n_runs).astype('float64') for i in self.dynamic_parameters]
-        if self.observation_parameters[0] is not None:
-            self.observation_parameters_reshaped = [np.repeat(i.pymc_distribution, self.n_runs) for i in self.observation_parameters]
+        # THIS BIT IS PROBABLY HORRIBLY INEFFICIENT
+        static_parameters_reshaped = [np.repeat(i, n_runs).astype('float64') for i in static_parameters]
+        dynamic_parameters_reshaped = [T.unbroadcast(T.tile(np.repeat(i, n_runs).astype('float64'), (i.output_info_size, 1)), 0) for i in dynamic_parameters]  # TODO
+        if observation_parameters[0] is not None:
+            observation_parameters_reshaped = [np.repeat(i.pymc_distribution, self.n_runs) for i in
+                                               observation_parameters]
         else:
-            self.observation_parameters_reshaped = None
+            observation_parameters_reshaped = None
 
-        time = T.ones_like(x) * T.arange(0, x.shape[0]).reshape((x.shape[0], 1))
+        # Time should be of shape n_trials X n_subjects (it is assumed to have one value per trial)
+        time = T.ones((x.shape[0], x.shape[2])) * T.arange(0, x.shape[0]).reshape((x.shape[0], 1))
 
-        # print [dict(input=x, taps=[-1]), dict(input=time, taps=[-1])] + self.model_inputs
+        #
+        # for i in dynamic_parameters_reshaped:
+        #     i = theano.printing.Print(str(i))(i.type)
 
-        model_inputs_initial = copy.deepcopy(self.model_inputs)
-        for i in model_inputs_initial:
-            i['input'] = i['input'][:1, :]
-            i.pop('taps')
-
+        # Scan loop - iterates over trials
         try:
-            value, _ = scan(fn=self.learning_model,
-                            sequences=[dict(input=x, taps=[-1]), dict(input=time, taps=[-1])] + self.model_inputs,
-                            outputs_info=self.dynamic_parameters_reshaped + [None] * (self.__n_learning_returns - self.__n_dynamic),
-                            non_sequences=self.static_parameters_reshaped)
-            _value, _ = scan(fn=self.__learning_model_initial,
-                                    sequences=[dict(input=x[:1, :]), dict(input=time[:1, :])] + model_inputs_initial,
-                             outputs_info=self.dynamic_parameters_reshaped + [None] * (self.__n_learning_returns - self.__n_dynamic),
-                             non_sequences=self.static_parameters_reshaped)
+            value, self.context.updates = scan(fn=self.learning_model,
+                                  sequences=[dict(input=x), dict(input=time)] + self.model_inputs,
+                                  outputs_info=dynamic_parameters_reshaped + [None] * (self.__n_learning_returns - self.__n_dynamic),
+                                  non_sequences=static_parameters_reshaped)
 
+        # Handle exceptions that might happen when using scan
         except ValueError as e:
             if "None as outputs_info" in e.message:
-                # TODO Make this error more interpretable
                 raise ValueError("Mismatch between number of dynamic outputs and number of dynamic inputs. \n"
                                  "Make sure function outputs and inputs match (i.e. all dynamic inputs have a corresponding\n"
                                  " returned value, and make sure dynamic parameters are correctly set to be dynamic and\n"
@@ -257,14 +260,15 @@ class _PyMCModel(Continuous):
             if 'takes exactly' in e.message:
                 # Catch incorrect number of arguments errors
                 n_inputs_provided = len(self.model_inputs)
-                n_dynamic_provided = len(self.dynamic_parameters_reshaped)
-                n_static_provided = len(self.static_parameters_reshaped)
-                raise TypeError("Incorrect number of arguments provided to the learning model function. \nFunction takes {0} "
-                                "arguments, provided {1} (outcome and time plus {2} additional inputs; \n{3} dynamic parameters;"
-                                " {4} static parameters)".format(len(inspect.getargspec(self.learning_model)[0]),
-                                                                 2 + n_inputs_provided + n_dynamic_provided + n_static_provided,
-                                                                 n_inputs_provided,
-                                                                 n_dynamic_provided + 1, n_static_provided))
+                n_dynamic_provided = len(dynamic_parameters_reshaped)
+                n_static_provided = len(static_parameters_reshaped)
+                raise TypeError(
+                    "Incorrect number of arguments provided to the learning model function. \nFunction takes {0} "
+                    "arguments, provided {1} (outcome and time plus {2} additional inputs; \n{3} dynamic parameters;"
+                    " {4} static parameters)".format(len(inspect.getargspec(self.learning_model)[0]),
+                                                     2 + n_inputs_provided + n_dynamic_provided + n_static_provided,
+                                                     n_inputs_provided,
+                                                     n_dynamic_provided + 1, n_static_provided))
             elif 'Wrong number of inputs for LE.make_node' in e.message:
                 got = re.search('(?<=got )\d+', e.message).group()
                 expected = re.search('(?<=expected )\d+', e.message).group()
@@ -278,25 +282,75 @@ class _PyMCModel(Continuous):
             else:
                 raise e
 
+        # Make sure value is a list
         if not len(value):  # TODO doesn't work if function only returns tuple of one value
             value = [value]
-            _value = [_value]
 
-        value = value[:self.__n_dynamic]  # hack, for some reason non-reused outputs don't join properly
+        # Add in outputs info on first trial
+        for n, i in enumerate(dynamic_parameters_reshaped):
+            value[n] = T.concatenate([i.reshape((1, i.shape[0], i.shape[1])), value[n][:-1, ...]])
 
-        for n, v in enumerate(value):
-            value[n] = T.concatenate([_value[n], v])
-
-        # end awful hack
+        # Dynamic inputs to observation model
         observation_dynamics = [value[i] for i in self.__observation_dynamic_inputs]
 
+        # Observation model if specified
         if self.observation_model is not None:
-            prob = self.observation_model(*observation_dynamics + self.observation_parameters_reshaped)
+            prob = self.observation_model(*observation_dynamics + observation_parameters_reshaped)
         else:
-            prob = value
-        # TODO return everything
+            prob = value  # Return raw outputs
+
         return prob
 
+    def get_samples(self, static_parameters=(), dynamic_parameters=(), observation_parameters=(), size=1):
+
+        x = self.outcomes
+
+        samples = []
+
+        for sample in range(size[0]):
+            values = self.get_value(self.outcomes, static_parameters, dynamic_parameters, observation_parameters,
+                                    self.n_runs.eval())[0].eval()
+            samples.append(values)
+
+        samples = np.array(samples)
+
+        return samples
+
+    def _match_drawn_parameters(self, model_params, drawn_params):
+
+        drawn_param_list = []
+
+        for p in model_params:
+            if p is not None and any([re.match(p.name, k) for k in drawn_params.keys()]):
+                for k, v in drawn_params.iteritems():
+                    if p is not None and p.name == k:
+                        drawn_param_list.append(v)
+            elif p is not None:
+                drawn_param_list.append(p.eval())
+            else:
+                drawn_param_list.append(None)
+
+        return drawn_param_list
+
+    def random(self, point=None, size=1):
+
+        # print self.vars
+        # print point
+        # print size
+        #
+        # drawn = draw_values(self.vars,
+        #                          point=point, size=size)
+        # drawn = dict(zip(self.vars, drawn))
+
+        param_dict = dict()
+        param_dict['static_parameters'] = self._match_drawn_parameters(self.static_parameters, point)
+        param_dict['dynamic_parameters'] = self._match_drawn_parameters(self.dynamic_parameters, point)
+        param_dict['observation_parameters'] = self._match_drawn_parameters(self.observation_parameters, point)
+
+        print param_dict
+
+        # get subject-level parameters and match to static and dynamic parameters variables
+        return generate_samples(self.get_samples, size=size, dist_shape=self.shape, broadcast_shape=1, **param_dict)
 
     def logp(self, x):
         """
@@ -309,43 +363,48 @@ class _PyMCModel(Continuous):
             Log likelihood
         """
 
-        model_output = self.get_value(x)
+        # Run the model
+        model_output = self.get_value(x, self.static_parameters, self.dynamic_parameters, self.observation_parameters,
+                                      self.n_runs)
 
+        # Match outputs from the model to inputs for the logp function
         for arg, val in self.logp_args.iteritems():
             if isinstance(val, str):
-
                 if val not in self.__learning_return_names and val not in self.__observation_return_names:
                     raise AttributeError("Learning and observation functions "
                                          "has no return named {0}, "
                                          "valid learning return names = {1}, "
-                                         "valid observation return names = {2}".format(val, self.__learning_return_names,
+                                         "valid observation return names = {2}".format(val,
+                                                                                       self.__learning_return_names,
                                                                                        self.__observation_return_names))
                 else:
                     # TODO documentation for learning vs observation model outputs
                     if self.observation_model is not None:
                         for n, i in enumerate(self.__observation_return_names):
                             if i == val:
-                                self.logp_args[arg] = model_output[n]
+                                self.logp_args[arg] = reduce_3D(model_output[n])  # Logp functions require 2D inputs
 
                     else:
                         for n, i in enumerate(self.__learning_return_names):
                             if i == val:
-                                self.logp_args[arg] = model_output[n]
+                                self.logp_args[arg] = reduce_3D(model_output[n])
 
+        # self.logp_args['total_size'] = self.responses.shape
 
+        # Set up the logp function
         if self.logp_distribution is None:  # for some reason this gets compiled multiple times
             model_vars = copy.copy(self.vars)
             self.logp_distribution = self.logp_function(**self.logp_args)
             self.logp_vars = [i.name for i in self.vars if i not in model_vars]
 
-        responses_nonan = T.switch(T.isnan(self.responses), 0., self.responses)
-        logp = T.sum(self.logp_distribution.logp(self.responses))
+        # Get logp
+        # logp = T.sum(self.logp_distribution.logp(reduce_3D(self.responses)[:, 0].astype('int8')))  # TODO might need to be changed
+        logp = T.sum(self.logp_distribution.logp(reduce_3D(self.responses)))  # TODO might need to be changed
 
         return logp
 
 
 class DMModel():
-
     """
     Class used for defining DMpy models
 
@@ -389,14 +448,14 @@ class DMModel():
         else:
             self.__n_observation_returns, self.__observation_returns = 0, []
 
-        self.__n_dynamic= 0
+        self.__n_dynamic = 0
 
         for p in self.learning_parameters:
             try:
                 if p.dynamic:
-                    self.__n_dynamic+= 1
+                    self.__n_dynamic += 1
             except AttributeError:
-                raise ValueError("One or more parameters are not instances of the RLpackage parameter class.\n"
+                raise ValueError("One or more parameters are not instances of the parameter class.\n"
                                  "Failed with parameter value {0}".format(p))
 
         if not isinstance(self.logp_function, str) and not callable(self.logp_function):
@@ -405,8 +464,7 @@ class DMModel():
 
         if isinstance(self.logp_function, str) and self.logp_function not in ['normal', 'bernoulli', 'beta']:
             raise ValueError("Logp distribution should be either a PyMC3 distribution or one of 'normal', 'bernoulli',"
-                            " or 'beta")
-
+                             " or 'beta")
 
         if type(self.observation_parameters) is not list:
             self.observation_parameters = [self.observation_parameters]
@@ -430,12 +488,10 @@ class DMModel():
             n_obs_params = 0
             self.__n_obs_dynamic = 0
 
-
         # create model
         self._pymc3_model = None
 
-
-    def _create_model(self, mle=False, hierarchical=False):
+    def _create_model(self, mle=False, hierarchical=False, offset=False, minibatch=0):
 
         """
         Internally used method for generating PyMC3 model instance - allows model instance to be cached and reused
@@ -450,19 +506,22 @@ class DMModel():
         """
 
         # record the initial state of the model, used for filling in starting values
-        self.__learning_model_initial = function_wrapper(self.learning_model, self.__n_learning_returns, self.__n_dynamic,
+        self.__learning_model_initial = function_wrapper(self.learning_model, self.__n_learning_returns,
+                                                         self.__n_dynamic,
                                                          len(self.model_inputs))
 
-        with pm.Model(theano_config={'compute_test_value': 'ignore', 'mode': 'FAST_RUN', 'exception_verbosity': 'high'}) as model:
-
-            m = _PyMCModel('model', learning_models=(self.learning_model, self.__learning_model_initial),
-                          learning_parameters=self.learning_parameters,
-                          observation_model=self.observation_model, vars=model.vars,
-                          observation_parameters=[self.observation_parameters, self.__observation_dynamic_inputs],
-                          responses=self.responses, observed=self.outcomes, outcomes=self.outcomes, time=self.time,
-                          n_subjects=self.n_subjects, n_runs=self.n_runs, hierarchical=hierarchical, mle=mle,
-                          logp_function=self.logp_function, logp_args=self.logp_args, model_inputs=self.theano_model_inputs)
-
+        with pm.Model(theano_config={'compute_test_value': 'ignore', 'mode': 'FAST_RUN',
+                                     'exception_verbosity': 'high'}) as model:
+            m = _PyMCModel('model', model, learning_models=(self.learning_model, self.__learning_model_initial),
+                           learning_parameters=self.learning_parameters,
+                           observation_model=self.observation_model, vars=model.vars, minibatch=minibatch,
+                           observation_parameters=[self.observation_parameters, self.__observation_dynamic_inputs],
+                           responses=self.responses, observed=self.outcomes, outcomes=self.outcomes, time=self.time,
+                           n_subjects=self.n_subjects, n_runs=self.n_runs, response_transform=self.response_transform,
+                           hierarchical=hierarchical, offset=offset, mle=mle,
+                           logp_function=self.logp_function, logp_args=self.logp_args,
+                           model_inputs=self.theano_model_inputs,
+                           total_size=self._responses_shape)
 
             self._DMpy_model = m
 
@@ -470,16 +529,13 @@ class DMModel():
             params = [i for j in params for i in j]
             self.params = [p for p in params if p is not None]
 
-            # print m.distribution.unobserved_RVs
-
         self._pymc3_model = model
 
-        print "Created model"
 
-
-    def fit(self, responses, outcomes=None, fit_method='MLE', hierarchical=False, plot=True, fit_stats=False, recovery=False,
+    def fit(self, responses, outcomes=None, fit_method='MLE', hierarchical=False, plot=True, fit_stats=False,
+            recovery=False,
             exclude_subjects=None, exclude_runs=None, fit_kwargs=None, sample_kwargs=None, suppress_table=False,
-            model_inputs=None, response_transform=None):
+            model_inputs=None, response_transform=None, offset=False, minibatch=0):
 
         """
         General fitting method.
@@ -530,6 +586,9 @@ class DMModel():
                                 " {0}".format(type(response_transform)))
             else:
                 self.response_transform = response_transform
+            if len(responses.shape) > 2:
+                warnings.warn("Response transforms might not work on multidimensional responses")
+
         elif self.logp_function == 'beta':
             self.response_transform = beta_response_transform  # transform to avoid zeros and ones
         else:
@@ -548,17 +607,12 @@ class DMModel():
         if sample_kwargs is None:
             sample_kwargs = {}
 
-        # make sure outcomes and responses look nice
-
-        if responses.shape[0] == 1:
-            responses = responses[0]
-
-        if len(responses.shape) < 2:
-            responses = responses.reshape(1, responses.shape[0])
-
-        if responses.shape[1] != outcomes.shape[0]:
-            raise ValueError("Responses ({0}) and outcomes ({1}) have unequal lengths".format(responses.shape[1],
+        if responses.shape[0] != outcomes.shape[0]:
+            raise ValueError("Responses ({0}) and outcomes ({1}) have unequal lengths".format(responses.shape[0],
                                                                                               outcomes.shape[0]))
+
+        self._responses_shape = [int(i) for i in responses.shape]
+
         if fit_method in ['MLE', 'mle']:
             mle = True
         else:
@@ -574,19 +628,45 @@ class DMModel():
             # turn outcomes and responses into shared variables
 
             self.logp_function = self.logp_function
-            self.responses = theano.shared(responses)
-            self.outcomes = theano.shared(outcomes)
-            self.theano_model_inputs = [theano.shared(i.astype(np.float64)) for i in self.model_inputs]
-            self.time = theano.shared(time)
+
+            if minibatch > 0:
+                transformed_responses = self.response_transform(responses)
+                mb_transformed_responses = pm.Minibatch(transformed_responses, batch_size=[minibatch, Ellipsis])
+                mb_outcomes = pm.Minibatch(outcomes, batch_size=[Ellipsis, minibatch])
+                mb_time = pm.Minibatch(time, batch_size=[Ellipsis, minibatch])
+                self.responses = mb_transformed_responses
+                self.outcomes = mb_outcomes
+                self.time = mb_time
+                self.theano_model_inputs = [pm.Minibatch(i.astype(np.float64),
+                                                         batch_size=[Ellipsis, minibatch]) for i in self.model_inputs]
+            else:
+                self.responses = theano.shared(responses)
+                self.outcomes = theano.shared(outcomes)
+                self.theano_model_inputs = [theano.shared(i.astype(np.float64)) for i in self.model_inputs]
+                self.time = theano.shared(time)
+
             self.n_subjects = n_subjects
             self.n_runs = theano.shared(n_runs)
-            self._create_model(mle=mle, hierarchical=hierarchical)
+            self._create_model(mle=mle, hierarchical=hierarchical, offset=offset, minibatch=minibatch)
 
-        self.responses.set_value(self.response_transform(responses))
-        self.outcomes.set_value(outcomes)
-        for n, i in enumerate(self.theano_model_inputs):
-            i['input'].set_value(self.model_inputs[n])
-        self.time.set_value(time)
+        transformed_responses = self.response_transform(responses)
+        if minibatch > 0:
+            mb_transformed_responses = pm.Minibatch(transformed_responses, batch_size=[minibatch, Ellipsis])
+            mb_outcomes = pm.Minibatch(outcomes, batch_size=[Ellipsis, minibatch])
+            mb_time = pm.Minibatch(time, batch_size=[Ellipsis, minibatch])
+            self.responses = mb_transformed_responses
+            self.outcomes = mb_outcomes
+            self.time = mb_time
+            for n, i in enumerate(self.theano_model_inputs):
+                i['input'] = pm.Minibatch(self.model_inputs[n], batch_size=[Ellipsis, minibatch])
+
+        else:
+            self.responses.set_value(transformed_responses)
+            self.outcomes.set_value(outcomes)
+            self.time.set_value(time)
+            for n, i in enumerate(self.theano_model_inputs):
+                i['input'].set_value(self.model_inputs[n])
+
         self.n_subjects = n_subjects
         self.n_runs.set_value(n_runs)
         self._fit_method = fit_method.lower()
@@ -603,7 +683,8 @@ class DMModel():
             self._fit_MAP(plot=plot, recovery=recovery, suppress_table=suppress_table, **fit_kwargs)
 
         elif fit_method in ['variational', 'Variational']:
-            self._fit_variational(plot=plot, hierarchical=hierarchical, recovery=recovery, suppress_table=suppress_table,
+            self._fit_variational(plot=plot, hierarchical=hierarchical, recovery=recovery,
+                                  suppress_table=suppress_table,
                                   fit_stats=fit_stats, fit_kwargs=fit_kwargs, sample_kwargs=sample_kwargs)
 
         elif fit_method in ['MCMC', 'mcmc']:
@@ -613,7 +694,6 @@ class DMModel():
         else:
             raise ValueError("Invalid fitting method provided ({0}). Fit method should be one of {1}"
                              .format(fit_method, allowed_methods))
-
 
     def _fit_MCMC(self, hierarchical=False, plot=True, fit_stats=False, recovery=True, suppress_table=False,
                   **kwargs):
@@ -647,7 +727,8 @@ class DMModel():
 
         self.fit_values = pm.summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
 
-        self.parameter_table = parameter_table(pm.summary(self.trace), self.subjects, self._DMpy_model.distribution.logp_vars)
+        self.parameter_table = parameter_table(pm.summary(self.trace), self.subjects,
+                                               self._DMpy_model.distribution.logp_vars)
 
         if not suppress_table:
             print "\nPARAMETER ESTIMATES\n"
@@ -662,12 +743,10 @@ class DMModel():
             # these seem to take a lot of time...
             self.fit_stats()
 
-
-        #self.log_likelihood, self.BIC, self.AIC = model_fit(rl.logp, self.fit_values, rl.vars)
+        # self.log_likelihood, self.BIC, self.AIC = model_fit(rl.logp, self.fit_values, rl.vars)
         self.fit_complete = True
         end = timer()
         print "Finished model fitting in {0} seconds".format(end - start)
-
 
     def _fit_variational(self, plot=True, hierarchical=True, fit_stats=False, recovery=True, suppress_table=False,
                          fit_kwargs=None, sample_kwargs=None):
@@ -705,7 +784,8 @@ class DMModel():
 
         self.fit_values = pm.summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
 
-        self.parameter_table = parameter_table(pm.summary(self.trace), self.subjects, self._DMpy_model.distribution.logp_vars)
+        self.parameter_table = parameter_table(pm.summary(self.trace), self.subjects,
+                                               self._DMpy_model.distribution.logp_vars)
 
         if not suppress_table:
             print "\nPARAMETER ESTIMATES\n"
@@ -724,9 +804,7 @@ class DMModel():
         end = timer()
         print "Finished model fitting in {0} seconds".format(end - start)
 
-
     def _fit_MAP(self, plot=True, mle=False, recovery=True, suppress_table=False, **kwargs):
-
 
         if mle:
             print "\n-------------------" \
@@ -757,7 +835,6 @@ class DMModel():
                 raise err
 
             self.raw_fit_values = self.map_estimate
-
 
         self.fit_complete = True
         # need to backwards transform these values
@@ -791,8 +868,7 @@ class DMModel():
 
         self.WAIC = None
         end = timer()
-        print "Finished model fitting in {0} seconds".format(end-start)
-
+        print "Finished model fitting in {0} seconds".format(end - start)
 
     def fit_stats(self):
 
@@ -808,7 +884,6 @@ class DMModel():
 
         else:
             raise AttributeError("Model has not been fit")
-
 
     def individual_fits(self, logp_functions=None, data_type='discrete'):
 
@@ -828,12 +903,14 @@ class DMModel():
             logp_functions = dict()
 
         if not isinstance(logp_functions, dict):
-            raise TypeError("Logp functions should be provided as a dictionary of the form {'name': (function, additional args)}")
+            raise TypeError(
+                "Logp functions should be provided as a dictionary of the form {'name': (function, additional args)}")
 
         for k, v in logp_functions.iteritems():
             if len(v) != 2:
-                raise ValueError("Wrong number of values provided for logp function {0}, provided {1} values but 2 should"
-                                 "be provided: the logp function and a list of additional arguments".format(k, len(v)))
+                raise ValueError(
+                    "Wrong number of values provided for logp function {0}, provided {1} values but 2 should"
+                    "be provided: the logp function and a list of additional arguments".format(k, len(v)))
 
         if self._hierarchical == True:
             raise NotImplementedError("Individual fits not available for hierarchical models")
@@ -842,7 +919,8 @@ class DMModel():
             raise AttributeError("Model has not been fit")
 
         if data_type not in ['discrete', 'continuous']:
-            raise ValueError("Data type should be either 'discrete' or 'continuous', {0} was provided".format(data_type))
+            raise ValueError(
+                "Data type should be either 'discrete' or 'continuous', {0} was provided".format(data_type))
 
         sim_results, _ = self.simulate()
 
@@ -889,12 +967,12 @@ class DMModel():
 
         if self.logp_function == 'r2' or data_type == 'continous':
             self.BIC_individual = bic_regression(self._pymc3_model.vars, 1, o, -logp_results['rss'], individual=True)
-            self.AIC_individual = bic_regression(self._pymc3_model.vars, 1, o, -logp_results['rss'], individual=True)  # TODO
+            self.AIC_individual = bic_regression(self._pymc3_model.vars, 1, o, -logp_results['rss'],
+                                                 individual=True)  # TODO
 
         if self.logp_function == 'll' or data_type == 'discrete':
             self.BIC_individual = bic(self._pymc3_model.vars, 1, o, logp_results['logp'], individual=True)
             self.AIC_individual = aic(self._pymc3_model.vars, 1, logp_results['logp'])
-
 
         fit_table = dict(subject=self.subjects, BIC=self.BIC_individual, AIC=self.AIC_individual)
         for k in logp_results.keys():
@@ -909,7 +987,6 @@ class DMModel():
 
         return self.model_fit_individual
 
-
     def tracePlot(self):
 
         """
@@ -919,7 +996,6 @@ class DMModel():
 
         sns.set_palette("deep")
         traceplot(self.trace)
-
 
     def simulate(self, outcomes=None, learning_parameters=None, observation_parameters=None, plot=False,
                  output_file='', n_subjects=1, return_choices=False, combinations=False,
@@ -963,9 +1039,13 @@ class DMModel():
         # Turn the outputs into a dictionary with return names as keys and check that the response variable exists
         return_names = self.__learning_returns + self.__observation_returns
 
-        if response_variable not in return_names:
-            raise KeyError("The provided response variable ('{0}') is not one of the outputs returned by either the "
-                           "learning or observation model. Possible outputs are {1}".format(response_variable, return_names))
+        if not isinstance(response_variable, list):
+            response_variable = [response_variable]
+        for r in response_variable:
+            if r not in return_names:
+                raise KeyError(
+                    "The provided response variable ('{0}') is not one of the outputs returned by either the "
+                    "learning or observation model. Possible outputs are {1}".format(r, return_names))
 
         # Using user-defined parameter values & outcomes
 
@@ -1020,10 +1100,12 @@ class DMModel():
             # Get fitted parameter values from parameter table
             for p in self.parameter_table.columns:
                 if p.replace('mean_', '') in learning_parameter_names:
-                    self.sim_learning_parameters[p.replace('mean_', '')] = np.repeat(self.parameter_table[p].values, n_runs)
+                    self.sim_learning_parameters[p.replace('mean_', '')] = np.repeat(self.parameter_table[p].values,
+                                                                                     n_runs)
 
                 elif observation_parameter_names is not None and p.replace('mean_', '') in observation_parameter_names:
-                    self.sim_observation_parameters[p.replace('mean_', '')] = np.repeat(self.parameter_table[p].values, n_runs)
+                    self.sim_observation_parameters[p.replace('mean_', '')] = np.repeat(self.parameter_table[p].values,
+                                                                                        n_runs)
 
             for p in learning_parameter_names:
                 if p not in self.sim_learning_parameters.keys():
@@ -1051,15 +1133,18 @@ class DMModel():
         self.__parameter_values = self.sim_learning_parameters.values() + self.sim_observation_parameters.values()
 
         # Get combinations
+        # TODO parameters with multiple columns
         p_combinations, n_subjects = self._create_parameter_combinations(combinations, self.__parameter_values, n_runs,
                                                                          n_subjects, params_from_fit)
 
-        # put combinations of parameters back into dictionaries
+        # put combinations of parameters back into dictionaries - there's probably a more efficient way of doing all this
         for n, p in enumerate(self.sim_learning_parameters.keys() + self.sim_observation_parameters.keys()):
             if p in self.sim_learning_parameters.keys():
-                self.sim_learning_parameters[p] = p_combinations[:, n]
+                self.sim_learning_parameters[p] = (p_combinations[:, n].T if p_combinations[:, n].shape[1] == 1
+                                                   else p_combinations[:, n])
             else:
-                self.sim_observation_parameters[p] = p_combinations[:, n]
+                self.sim_observation_parameters[p] = (p_combinations[:, n].T if p_combinations[:, n].shape[1] == 1
+                                                   else p_combinations[:, n])
 
         # each parameter now has a list of values
 
@@ -1093,26 +1178,26 @@ class DMModel():
                 if not match:
                     raise ValueError("Parameter {0} has no value provided".format(i.name))
 
-
         # Ensure outcomes and additional model inputs are the right format
-        if outcomes.shape[1] < p_combinations.shape[0]:
+        if outcomes.shape[2] < p_combinations.shape[0]:
             warnings.warn("Fewer outcome lists than simulated subjects, attempting to use same outcomes for each "
                           "subject (number of outcome lists = {0}, number of subjects = {1}".format(outcomes.shape[0],
-                                                                                                    p_combinations.shape[0]), Warning)
+                                                                                                    p_combinations.shape[
+                                                                                                        0]), Warning)
             try:
                 # Try to repeat the outcomes we have
-                outcomes = np.tile(outcomes, (1, p_combinations.shape[0] / outcomes.shape[1]))
+                outcomes = np.tile(outcomes, (1, 1, p_combinations.shape[0] / outcomes.shape[2]))
                 for n in range(len(model_inputs)):
-                    model_inputs[n] = np.tile(model_inputs[n], (1, p_combinations.shape[0] / model_inputs[n].shape[1]))
+                    model_inputs[n] = np.tile(model_inputs[n],
+                                              (1, 1, p_combinations.shape[0] / model_inputs[n].shape[2]))
             except:
                 raise ValueError("Unable to repeat outcome arrays to match number of subjects, make sure to either "
                                  "provide outcomes for each subject in a dataframe or make sure the number of "
                                  "simulated subjects is divisible by the number of outcomes. Number of outcome arrays"
-                                 " = {0}, number of simulated subjects = {1}".format(outcomes.shape[1], p_combinations.shape[0]))
-
-        if not outcomes.shape[1] == p_combinations.shape[0]:
+                                 " = {0}, number of simulated subjects = {1}".format(outcomes.shape[1],
+                                                                                     p_combinations.shape[0]))
+        if not outcomes.shape[2] == p_combinations.shape[0]:
             raise ValueError("Number of outcome lists provided does not match number of subjects")
-
 
         # Create theano shared variables and scan function
 
@@ -1122,16 +1207,25 @@ class DMModel():
 
         # Define the simulation function if it doesn't already exist
         outputs_info = sim_dynamic + [None] * (self.__n_learning_returns - len(sim_dynamic))
-        time = np.tile(np.arange(0, outcomes.shape[0]), (outcomes.shape[1], 1)).T
+        time = np.tile(np.arange(0, outcomes.shape[0]), (outcomes.shape[2], 1)).T
+
+        outputs_info = [np.array([i])[0, ...].T if not isinstance(i, np.ndarray) and i is not None else i for i in
+                        outputs_info]
 
         if self._simulate_function == None:
-            self._define_simulate_function(outputs_info, sim_static, model_inputs, sim_observation)
+            try:
+                self._define_simulate_function(outputs_info, sim_static, model_inputs, sim_observation)
+            except NameError as e:
+                raise NameError("Encountered an error when simulating from the model: {0}. This probably means "
+                                "the function returns a variable which is not defined within the function".format(e))
+            except:
+                raise e
 
         # Call the function
         sim_data = self._simulate_function(outcomes, time, *(model_inputs + sim_static +
                                                              [i for i in outputs_info if i is not None] +
                                                              sim_observation))
-
+        self.sim_stuff = sim_data
 
         # Rename duplicate return names
         for name, count in Counter(return_names).items():
@@ -1144,15 +1238,16 @@ class DMModel():
                                                    ' {1} simulated outputs'.format(len(return_names), len(sim_data))
         self._simulation_results_dict = OrderedDict(zip(self.__learning_returns + self.__observation_returns, sim_data))
 
+        # Check if our response variable is 3d and rename if needed
+        for n in range(len(response_variable)):
+            r = response_variable[n]
+            if self._simulation_results_dict[r].shape[1] > 1:
+                for i in range(self._simulation_results_dict[r].shape[1]):
+                    response_variable.append(r + str(i))
+                response_variable.remove(r)
 
-        # Check for nans and flatten
-        for r, v in self._simulation_results_dict.items():
-            if np.any(np.isnan(v)):
-                warnings.warn("NaNs present in {0}".format(r))
-            if np.any(np.isinf(v)):
-                warnings.warn("Infs present in {0}".format(r))
-            else:
-                self._simulation_results_dict[r] = flatten_simulated(v)
+        # Unflattened output
+        self._simulation_results_dict_raw = self._simulation_results_dict
 
         # Convert simulation results to a pandas dataframe
         if self.fit_complete:
@@ -1160,8 +1255,8 @@ class DMModel():
         else:
             true_responses = None
         self.simulation_results = simulated_dataframe(self._simulation_results_dict, outcomes, true_responses,
-                                                      model_inputs, n_runs, n_subjects, self.subjects,
-                                                      self.sim_learning_parameters,  self.sim_observation_parameters,
+                                                      model_inputs, n_runs, n_subjects, outcomes.shape[0], self.subjects,
+                                                      self.sim_learning_parameters, self.sim_observation_parameters,
                                                       self.fit_complete)
 
         # Create choices
@@ -1177,16 +1272,17 @@ class DMModel():
                                                                     upper_bound=np.max(outcomes))
 
         # Set response variable
-        if self.logp_function == 'bernoulli' or return_choices:
-            self.simulation_results['Response'] = generate_choices2(self.simulation_results[response_variable])
-
-        else:
-            self.simulation_results['Response'] = self.simulation_results[response_variable]
+        for n, var in enumerate(response_variable):
+            if self.logp_function == 'bernoulli' or return_choices:
+                self.simulation_results['Response{0}'.format(n if len(response_variable) > 1 else '')] = \
+                    generate_choices2(self.simulation_results[var])
+            else:
+                self.simulation_results['Response{0}'.format(n if len(response_variable) > 1 else '')] = \
+                    self.simulation_results[var]
 
         self._recovery_run = False
 
         # Plots
-
         if plot:
             self.simulation.plot()
 
@@ -1194,7 +1290,6 @@ class DMModel():
             self.simulation.plot_against_true()
 
         # Save to csv
-
         print "Saving simulated results to {0}".format(output_file)
         if len(output_file):
             self.simulation_results.to_csv(output_file, index=False)
@@ -1204,7 +1299,6 @@ class DMModel():
                                             outcomes, n_subjects, n_runs, self.fit_complete, self.responses)
 
         return self.simulation, output_file
-
 
     def _create_parameter_combinations(self, combinations, parameter_values, n_runs, n_subjects, params_from_fit):
 
@@ -1219,15 +1313,18 @@ class DMModel():
 
         else:  # get pairs of parameters
             p_combinations = []
-            if not all(len(i) == len(parameter_values[0]) for i in parameter_values):
+            if not all(i.shape[-1] == parameter_values[0].shape[-1] for i in parameter_values):
                 raise ValueError("Each parameter should have the same number of values")
             else:
-                for i in range(len(parameter_values[0])):
-                    p_combinations.append([j[i] for j in parameter_values])
-            p_combinations = np.array(p_combinations)
-            n_combinations = p_combinations.shape[0]
+                for i in range(parameter_values[0].shape[-1]):
+                    p_combinations.append([j[..., i] for j in parameter_values])
+
+            n_combinations = parameter_values[0].shape[-1]
             if not params_from_fit:
-                p_combinations = np.repeat(p_combinations, n_runs, axis=0)
+                for sub in range(len(p_combinations)):  # iterate over subjects
+                    for p in range(len(p_combinations[sub])):  # iterate over parameters
+                        p_combinations[sub][p] = np.repeat(p_combinations[sub][p], n_runs, axis=0)
+                p_combinations = np.repeat(p_combinations, n_runs, axis=1)
                 p_combinations = np.tile(p_combinations, (n_subjects, 1))
 
         # New n_subjects = number of subjects * number of parameter combinations
@@ -1238,7 +1335,6 @@ class DMModel():
 
         return p_combinations, n_subjects
 
-
     def _define_simulate_function(self, outputs_info, sim_static, model_inputs, sim_observation):
 
         """
@@ -1247,12 +1343,10 @@ class DMModel():
         """
 
         sim_static = [np.array([i]) if not isinstance(i, np.ndarray) else i for i in sim_static]
-        outputs_info = [np.array([i]) if not isinstance(i, np.ndarray) and i is not None else i for i in outputs_info]
-
-        # define theano tensors
         time_theano = T.matrix("time", dtype='float64')
-        outcomes_theano = T.matrix("outcomes", dtype='float64')
-        model_inputs_theano = [T.matrix("model_input_{0}".format(n), dtype='float64') for n in range(len(model_inputs))]
+        outcomes_theano = T.tensor3("outcomes", dtype='float64')
+        model_inputs_theano = [T.tensor3("model_input_{0}".format(n), dtype='float64') for n in
+                               range(len(model_inputs))]
         sim_static_theano = []
         outputs_info_theano = []
         sim_observation_theano = []
@@ -1261,12 +1355,12 @@ class DMModel():
             if i is None:
                 outputs_info_theano.append(None)
             else:
-                outputs_info_theano.append(T.vector("outputs_info_{0}".format(n), dtype='float64'))
+                outputs_info_theano.append(T.matrix("outputs_info_{0}".format(n), dtype='float64'))
 
         for n, i in enumerate(sim_static):
-            sim_static_theano.append(T.vector("sim_static_{0}".format(n), dtype='float64'))
+            sim_static_theano.append(T.matrix("sim_static_{0}".format(n), dtype='float64'))
         for n, i in enumerate(sim_observation):
-            sim_observation_theano.append(T.vector("sim_observation_{0}".format(n), dtype='float64'))
+            sim_observation_theano.append(T.matrix("sim_observation_{0}".format(n), dtype='float64'))
         # sequences for scan should be in format (n_trials, n_subjects)
 
         # Run the learning model
@@ -1276,10 +1370,11 @@ class DMModel():
                               outputs_info=outputs_info_theano,
                               non_sequences=sim_static_theano)
 
-        # Not sure what this does but it's probably important
+        # Add in first trial for outputs info (initial value rather than first computed value)
         for n, i in enumerate(outputs_info_theano):
             if i is not None:
-                value[n] = T.vertical_stack(i.reshape((1, i.shape[0])), value[n][:-1, :])
+                # value[n] = T.set_subtensor(value[n][0, ...], i)
+                value[n] = T.concatenate([i.reshape((1, i.shape[0], i.shape[1])), value[n][:-1, ...]])
 
         # Run the observation model
         # TODO change this so it returns a list rather than P + [obs outs] - change documentation
@@ -1291,13 +1386,11 @@ class DMModel():
             obs_outs = []
 
         # Combine learning and observation model outputs into a single list
-        out = T.as_tensor_variable(list(value) + list(obs_outs))
         self._simulate_function = theano.function(inputs=[outcomes_theano, time_theano] + model_inputs_theano +
                                                          sim_static_theano +
                                                          [i for i in outputs_info_theano if i is not None] +
                                                          sim_observation_theano,
-                                                  outputs=out, updates=updates)
-
+                                                  outputs=value + obs_outs, updates=updates)
 
     def recovery(self, correlations=True, by=None):
 
@@ -1311,7 +1404,8 @@ class DMModel():
 
         sns.set_palette("deep")
         self.sims = self.sims.reset_index(drop=True)
-        fit_params = [i for i in self.parameter_table.columns if not 'sd_' in i and not 'mc_error' in i and not 'hpd' in i
+        fit_params = [i for i in self.parameter_table.columns if
+                      not 'sd_' in i and not 'mc_error' in i and not 'hpd' in i
                       and not 'Subject' in i and not '_sim' in i]
         if not self._recovery_run:
             # Groupby used because runs are repeated
@@ -1334,7 +1428,7 @@ class DMModel():
             regplot_scatter = True
 
         # SCATTER PLOTS - CORRELATIONS
-        f, axarr = plt.subplots(1, n_p_free, figsize=(2.5 * n_p_free, 3))
+        f, axarr = plt.subplots(1, n_p_free, figsize=(2.5 * n_p_free, 3), facecolor='white')
         for n, p in enumerate(fit_params):  # this code could all be made far more efficient
             if p.replace('mean_', '') + '_sim' not in self.sims.columns:
                 raise ValueError("Simulated values for parameter {0} not found in response file".format(p))
@@ -1354,7 +1448,8 @@ class DMModel():
                             scatter_kws={'s': self.parameter_table[p.replace('mean_', 'sd_')] * 500, 'alpha': alpha},
                             scatter=regplot_scatter)
                 if by:
-                    points = ax.scatter(self.parameter_table[p.replace('mean_', '') + '_sim'], self.parameter_table[p], alpha=0.3,
+                    points = ax.scatter(self.parameter_table[p.replace('mean_', '') + '_sim'], self.parameter_table[p],
+                                        alpha=0.3,
                                         c=self.parameter_table[by + '_sim'], cmap='plasma',
                                         s=self.parameter_table[p.replace('mean_', 'sd_')] * 500)
                     f.colorbar(points, ax=ax)
@@ -1363,7 +1458,8 @@ class DMModel():
                 sns.regplot(self.parameter_table[p.replace('mean_', '') + '_sim'], self.parameter_table[p], ax=ax,
                             scatter=regplot_scatter, scatter_kws={'alpha': alpha})
                 if by:
-                    points = ax.scatter(self.parameter_table[p.replace('mean_', '') + '_sim'], self.parameter_table[p], alpha=0.3,
+                    points = ax.scatter(self.parameter_table[p.replace('mean_', '') + '_sim'], self.parameter_table[p],
+                                        alpha=0.3,
                                         c=self.parameter_table[by + '_sim'], cmap='plasma',
                                         lw=1, edgecolors='black')
                     f.colorbar(points, ax=ax)
@@ -1375,7 +1471,7 @@ class DMModel():
             ax.set_ylabel('Estimated {0}'.format(p), fontweight=fontweight)
             ax.set_title('{0}\n'
                          'R2 = {1}'.format(p, np.round(r2_score(self.parameter_table[p.replace('mean_', '') + '_sim'],
-                                                          self.parameter_table[p]), 2)), fontweight=fontweight)
+                                                                self.parameter_table[p]), 2)), fontweight=fontweight)
 
             sim_min = np.min(self.parameter_table[p.replace('mean_', '') + '_sim'])
             sim_max = np.max(self.parameter_table[p.replace('mean_', '') + '_sim'])
@@ -1401,7 +1497,7 @@ class DMModel():
                 se_cor = None
             else:
                 se_cor = np.corrcoef(parameter_values, parameter_values_sim)[n_p_free:, :n_p_free]
-                fig, ax = plt.subplots(figsize=(n_p_free * 1.2, n_p_free * 1))
+                fig, ax = plt.subplots(figsize=(n_p_free * 1.2, n_p_free * 1), facecolor='white')
                 cmap = sns.diverging_palette(220, 10, as_cmap=True)
                 sns.heatmap(se_cor, cmap=cmap, square=True, linewidths=.5, xticklabels=fit_params,
                             yticklabels=fit_params, annot=True)  # order might not work here
@@ -1413,7 +1509,7 @@ class DMModel():
 
             ## POSTERIOR CORRELATIONS
             ee_cor = np.corrcoef(parameter_values, parameter_values)[n_p_free:, :n_p_free]
-            fig, ax = plt.subplots(figsize=(n_p_free * 1.2, n_p_free * 1))
+            fig, ax = plt.subplots(figsize=(n_p_free * 1.2, n_p_free * 1), facecolor='white')
             cmap = sns.diverging_palette(220, 10, as_cmap=True)
             sns.heatmap(ee_cor, cmap=cmap, square=True, linewidths=.5, xticklabels=fit_params,
                         yticklabels=fit_params, annot=True)  # order might not work here
@@ -1426,20 +1522,17 @@ class DMModel():
             se_cor = None
             warnings.warn('Only one parameter value provided, cannot perform recovery correlation tests')
 
-
-
         return se_cor  # TODO add ee cor
 
 
 class Parameter():
-
     """
     Class used to represent parameters
 
     """
 
     def __init__(self, name, distribution, lower_bound=None, upper_bound=None, mean=1., variance=None, dynamic=False,
-                 **kwargs):
+                 shape=None, size=1, **kwargs):
 
         """
 
@@ -1465,12 +1558,18 @@ class Parameter():
         else:
             self.fixed = False
 
+        # Only dynamic parameters should be shaped (I think)
+        if dynamic == False and shape is not None:
+            raise AttributeError("Only dynamic parameters can be given a shape")
+
         self.name = name
         self.distribution = distribution
         self.dynamic = dynamic
         self.lower_bound = lower_bound
         self.upper_bound = upper_bound
         self.__pymc_kwargs = kwargs
+        self.shape = shape
+        self.size = size
 
         if lower_bound:
             self.lower_bound = lower_bound
@@ -1484,7 +1583,6 @@ class Parameter():
 
 
 class SimulationResults():
-
     """
     Class used to represent results of simulations
 
@@ -1510,7 +1608,6 @@ class SimulationResults():
             self.outcomes = self.outcomes.eval()
         if self.responses is not None and not isinstance(self.responses, np.ndarray):
             self.responses = self.responses.eval()
-
 
     def plot(self, palette='blues', plot_choices=False, plot_outcomes=True, legend=True, plot_clean=False):
 
@@ -1554,18 +1651,19 @@ class SimulationResults():
                         if name == self.response_variable and plot_choices:
                             # Generate and plot choices based on response variable
                             ax[n, run].scatter(np.arange(0, self.results[name][self.results.Run == run]),
-                                               generate_choices2(self.results[name][self.results.Run == run]), color='#72a23b',
-                                         alpha=0.5, label='Simulated choices')
+                                               generate_choices2(self.results[name][self.results.Run == run]),
+                                               color='#72a23b',
+                                               alpha=0.5, label='Simulated choices')
 
                         if plot_outcomes:
                             # Plot task outcomes
                             ax[n, run].scatter(np.arange(0, self.results[name][self.results.Run == run]),
                                                self.results['Outcome'][self.results.Run == run], color='#72a23b',
-                                         alpha=0.5, label='Outcomes')
+                                               alpha=0.5, label='Outcomes')
 
                         # Set x and y limits
                         ax[n, run].set_ylim(np.min(self.results[name][self.results.Run == run]) - 0.5,
-                                               np.max(self.results[name][self.results.Run == run]) + 0.2)
+                                            np.max(self.results[name][self.results.Run == run]) + 0.2)
                         ax[n, run].set_xlim(0, self.results[name][self.results.Run == run].shape[0])
 
                         ax[n, run].set_xlabel("Trial")
@@ -1574,7 +1672,6 @@ class SimulationResults():
                             ax[n, run].legend(frameon=True, fancybox=True)
 
                 plt.tight_layout()
-
 
     def plot_against_true(self, subjects=None, runs=None, show_outcomes=True):
 
@@ -1632,15 +1729,14 @@ class SimulationResults():
                     # Plot task outcomes
                     if show_outcomes:
                         ax[n, nn].scatter(np.arange(0, len(run_df[self.response_variable])),
-                                           run_df['Outcome'], edgecolors='#353535', facecolors='none',
-                                           alpha=0.5, label='Outcomes', linewidth=1)
+                                          run_df['Outcome'], edgecolors='#353535', facecolors='none',
+                                          alpha=0.5, label='Outcomes', linewidth=1)
 
                     # Set x and y limits
                     ax[n, nn].set_ylim(np.min(run_df['Outcome']) - 0.2,
-                                        np.max(run_df['Outcome']) + 0.2)
+                                       np.max(run_df['Outcome']) + 0.2)
                     ax[n, nn].set_xlim(0, run_df[self.response_variable].shape[0])
                     ax[n, nn].legend(frameon=True, fancybox=True)
                     ax[n, nn].set_xlabel("Trial")
-
 
             plt.tight_layout()

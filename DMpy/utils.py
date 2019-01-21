@@ -1,7 +1,7 @@
 import numpy as np
 import theano.tensor as T
 from pymc3 import Model, Normal, HalfNormal, DensityDist, Potential, Bound, Uniform, fit, sample_approx, \
-    Flat, Deterministic
+    Flat, Deterministic, Minibatch, tt_rng, floatX
 import warnings
 import inspect
 import re
@@ -19,7 +19,7 @@ def get_transforms(bounded_parameter):
            bounded_parameter.pymc_distribution.transformation.forward
 
 
-def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False):
+def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False, offset=False, minibatch=0, total_size=0):
 
     """
     Turns parameters into pymc3 parameter distributions for model fitting
@@ -63,42 +63,60 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
         if p.distribution == 'normal' and p.lower_bound is not None and p.upper_bound is not None:
             BoundedNormal = Bound(Normal, lower=p.lower_bound, upper=p.upper_bound)
             if hierarchical:
-                p.pymc_distribution = BoundedNormal(p.name,
-                                                    mu=BoundedNormal(p.name + '_group_mu', mu=p.mean, sd=p.variance),
-                                                    sd=Uniform(p.name + '_group_sd', lower=0, upper=100),  # TODO need to allow adjustment of these values somehow
-                                                    shape=n_subjects, **kwargs)
+                if not offset:
+                    p.pymc_distribution = BoundedNormal(p.name,
+                                                        mu=BoundedNormal(p.name + '_group_mu', mu=p.mean, sd=p.variance),
+                                                        sd=Uniform(p.name + '_group_sd', lower=0, upper=100),  # TODO need to allow adjustment of these values somehow
+                                                        shape=n_subjects, **kwargs)
+                else:
+                    offset_param = Normal(p.name + '_offset', mu=0, sd=1, shape=n_subjects)
+                    group_mu = Normal(p.name + '_group_mu', mu=p.mean, sd=p.variance)
+                    group_sd = Uniform(p.name + '_group_sd', lower=0, upper=10)
+                    Am = group_mu + offset_param * group_sd
+                    p.pymc_distribution = Deterministic(p.name, (p.upper_bound - p.lower_bound) * T.nnet.sigmoid(Am) + p.lower_bound, **kwargs)
             elif n_subjects > 1:
                 p.pymc_distribution = BoundedNormal(p.name, mu=p.mean, sd=p.variance, shape=n_subjects, **kwargs)
             else:  # is this necessary?
                 p.pymc_distribution = BoundedNormal(p.name, mu=p.mean, sd=p.variance, **kwargs)
-            p.backward, p.forward = get_transforms(p)
+            # p.backward, p.forward = get_transforms(p)
 
         elif p.distribution == 'normal' and p.lower_bound is not None:
-            BoundedNormal = Bound(Normal, lower=p.lower_bound)
+            BoundedNormal = Bound(Normal, lower=p.lower_bound, upper=p.upper_bound)
             if hierarchical:
-                p.pymc_distribution = BoundedNormal(p.name,
-                                                    mu=BoundedNormal(p.name  + '_group_mu', mu=p.mean, sd=p.variance),
-                                                    sd=Uniform(p.name  + '_group_sd', lower=0, upper=100),
-                                                    shape=n_subjects, **kwargs)
+                if not offset:
+                    p.pymc_distribution = BoundedNormal(p.name,
+                                                        mu=BoundedNormal(p.name + '_group_mu', mu=p.mean, sd=p.variance),
+                                                        sd=Uniform(p.name + '_group_sd', lower=0, upper=100),  # TODO need to allow adjustment of these values somehow
+                                                        shape=n_subjects, **kwargs)
+                else:
+                    offset_param = Normal(p.name + '_offset', mu=0, sd=1, shape=n_subjects)
+                    group_mu = Normal(p.name + '_group_mu', mu=p.mean, sd=p.variance)
+                    group_sd = Uniform(p.name + '_group_sd', lower=0, upper=10)
+                    Am = group_mu + offset_param * group_sd
+                    p.pymc_distribution = Deterministic(p.name, (99999999999 - p.lower_bound) * T.nnet.sigmoid(Am) + p.lower_bound, **kwargs)
             elif n_subjects > 1:
                 p.pymc_distribution = BoundedNormal(p.name, mu=p.mean, sd=p.variance, shape=n_subjects, **kwargs)
-            else:
+            else:  # is this necessary?
                 p.pymc_distribution = BoundedNormal(p.name, mu=p.mean, sd=p.variance, **kwargs)
-            p.backward, p.forward = get_transforms(p)
+            # p.backward, p.forward = get_transforms(p)
 
         elif p.distribution == 'normal':
             if hierarchical:
-                p.pymc_distribution = Normal(p.name,
-                                             mu=Normal(p.name  + '_group_mu', mu=p.mean, sd=p.variance),
-                                             sd=Uniform(p.name + '_group_sd', lower=0, upper=100),
-                                             shape=n_subjects, transform=p.transform_method, **kwargs)
+                if not offset:
+                    p.pymc_distribution = Normal(p.name,
+                                                        mu=Normal(p.name + '_group_mu', mu=p.mean, sd=p.variance),
+                                                        sd=Uniform(p.name + '_group_sd', lower=0, upper=100),  # TODO need to allow adjustment of these values somehow
+                                                        shape=n_subjects, **kwargs)
+                else:
+                    offset_param = Normal(p.name + '_offset', mu=0, sd=1, shape=n_subjects)
+                    group_mu = Normal(p.name + '_group_mu', mu=p.mean, sd=p.variance)
+                    group_sd = Uniform(p.name + '_group_sd', lower=0, upper=10)
+                    p.pymc_distribution = Deterministic(p.name, group_mu + offset_param * group_sd, **kwargs)
             elif n_subjects > 1:
-                p.pymc_distribution = Normal(p.name, mu=p.mean, sd=p.variance, shape=n_subjects,
-                                             transform=p.transform_method, **kwargs)
-            else:
-                p.pymc_distribution = Normal(p.name, mu=p.mean, sd=p.variance, transform=p.transform_method, **kwargs)
-            if hasattr(p.pymc_distribution, "transformation"):
-                p.backward, p.forward = get_transforms(p)
+                p.pymc_distribution = Normal(p.name, mu=p.mean, sd=p.variance, shape=n_subjects, **kwargs)
+            else:  # is this necessary?
+                p.pymc_distribution = Normal(p.name, mu=p.mean, sd=p.variance, **kwargs)
+            # p.backward, p.forward = get_transforms(p)
 
         elif p.distribution == 'uniform':
             if hierarchical:
@@ -121,6 +139,11 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
                 p.pymc_distribution = Flat(p.name, **kwargs)
             if hasattr(p.pymc_distribution, "transformation"):
                 p.backward, p.forward = get_transforms(p)
+
+    # Minibatching
+    if minibatch > 0:
+        p.pymc_distribution = p.pymc_distribution[tt_rng().uniform(size=(minibatch,), low=0,
+                                                                            high=total_size - 1e-10).astype('int64')]
 
     return p
 
@@ -795,4 +818,43 @@ def parameter_check(parameters, sim=False):
                 raise TypeError(
                     "Parameter {0} is not the correct type. Parameter values should be provided as a DMPy "
                     "Parameter instance, provided type was {1}".format(p, type(p)))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
