@@ -1,7 +1,7 @@
 import numpy as np
 import theano.tensor as T
 from pymc3 import Model, Normal, HalfNormal, DensityDist, Potential, Bound, Uniform, fit, sample_approx, \
-    Flat, Deterministic, Minibatch, tt_rng, floatX
+    Flat, Deterministic, Minibatch, tt_rng, floatX, Beta, Lognormal
 import warnings
 import inspect
 import re
@@ -46,6 +46,11 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
                 p.name, p.distribution, p.lower_bound
             ))
             p.distribution = 'uniform'
+        elif p.distribution == 'beta':
+            print("\nParameter {0} distribution is {1}, converting to uniform with bounds (0.001), 0.999) for MLE".format(
+                p.name, p.distribution
+            ))
+            p.distribution = 'uniform'
         else:
             print("\nParameter {0} distribution is {1}, converting to flat for MLE\n".format(
                 p.name, p.distribution
@@ -53,12 +58,21 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
             p.distribution = 'flat'
 
     if p.fixed:
-        p.pymc_distribution = T.ones(n_subjects) * p.mean
+        p.pymc_distribution = T.ones((p.size, n_subjects)) * p.mean
+        p.pymc_distribution.name = p.name
 
     else:  # there's probably a cleaner way to do this
+        
+        #shape information
+        if p.size > 1:
+            shape = (p.size, n_subjects)
+        else:
+            shape = n_subjects
 
         if hierarchical and n_subjects < 2:
             raise ValueError("Hierarchical parameters only possible with > 1 subject")
+
+        # NORMAL DISTRIBUTIONS 
 
         if p.distribution == 'normal' and p.lower_bound is not None and p.upper_bound is not None:
             BoundedNormal = Bound(Normal, lower=p.lower_bound, upper=p.upper_bound)
@@ -118,11 +132,50 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
                 p.pymc_distribution = Normal(p.name, mu=p.mean, sd=p.variance, **kwargs)
             # p.backward, p.forward = get_transforms(p)
 
+        # BETA
+        elif p.distribution == 'beta':
+            if any([p.beta is not None and p.alpha is not None]) and any([p.mean is not None and p.variance is not None]):
+                raise AttributeError("Both mean/variance and alpha/beta provided - must provide only one of these parameterisations")
+            elif p.mean is not None:
+                if hierarchical:
+                    if not offset:
+                        p.pymc_distribution = Beta(p.name,
+                                                            mu=Beta(p.name + '_group_mu', mu=p.mean, sd=p.variance),
+                                                            sd=HalfNormal(p.name + '_group_sd', sd=0.05),  # TODO need to allow adjustment of these values somehow
+                                                            shape=n_subjects, **kwargs)
+                    else:
+                        offset_param = Normal(p.name + '_offset', mu=0, sd=1, shape=n_subjects)
+                        group_mu = Beta(p.name + '_group_mu', mu=p.mean, sd=p.variance)
+                        group_sd = Uniform(p.name + '_group_sd', lower=0, upper=10)
+                        p.pymc_distribution = Deterministic(p.name, group_mu + offset_param * group_sd, **kwargs)
+                elif n_subjects > 1:
+                    p.pymc_distribution = Beta(p.name, mu=p.mean, sd=p.variance, shape=n_subjects, **kwargs)
+                else:  # is this necessary?
+                    p.pymc_distribution = Beta(p.name, mu=p.mean, sd=p.variance, **kwargs)
+            else:
+                if hierarchical:
+                    if not offset:
+                        p.pymc_distribution = Beta(p.name, alpha=Lognormal(p.name + '_group_alpha', 1, 5), beta=Lognormal(p.name + '_group_beta', 1, 5),
+                                                            shape=n_subjects, **kwargs)
+                    else:
+                        # TODO
+                        offset_param = Normal(p.name + '_offset', mu=0, sd=1, shape=n_subjects)
+                        group_mu = Beta(p.name + '_group_mu', mu=p.mean, sd=p.variance)
+                        group_sd = Uniform(p.name + '_group_sd', lower=0, upper=10)
+                        p.pymc_distribution = Deterministic(p.name, group_mu + offset_param * group_sd, **kwargs)
+                elif n_subjects > 1:
+                    p.pymc_distribution = Beta(p.name, alpha=p.alpha, beta=p.beta, shape=n_subjects, **kwargs)
+                else:  # is this necessary?
+                    p.pymc_distribution = Beta(p.name, alpha=p.alpha, beta=p.beta, **kwargs)
+
+        # UNIFORM
+
         elif p.distribution == 'uniform':
             if hierarchical:
                 p.pymc_distribution = Uniform(p.name, lower=p.lower_bound, upper=p.upper_bound,
                                              shape=n_subjects, **kwargs)
             elif T.gt(n_subjects, 1):
+                print(p.size, n_subjects)
                 p.pymc_distribution = Uniform(p.name, lower=p.lower_bound, upper=p.upper_bound,
                                              shape=n_subjects, **kwargs)
             else:
@@ -139,6 +192,7 @@ def generate_pymc_distribution(p, n_subjects=None, hierarchical=False, mle=False
                 p.pymc_distribution = Flat(p.name, **kwargs)
             if hasattr(p.pymc_distribution, "transformation"):
                 p.backward, p.forward = get_transforms(p)
+
 
     # Minibatching
     if minibatch > 0:
@@ -169,9 +223,6 @@ def bic(variables, n_subjects, outcomes, likelihood, individual=False):
         BIC = (len(variables) * n_subjects) * np.log(np.prod(outcomes.shape.eval())) - 2. * likelihood
 
     else:
-        print len(variables)
-        print outcomes.shape[0]
-        print likelihood
         BIC = len(variables) * np.log(outcomes.shape[0]) - 2. * likelihood
 
     return BIC
@@ -247,110 +298,6 @@ def parameter_table(df_summary, subjects, logp_rvs):
     return df_summary
 
 
-def load_data(data_file, exclude_subjects=None, exclude_runs=None, additional_inputs=None):
-
-    # TODO rewrite all of this because it's a mess
-
-    if additional_inputs is None:
-        additional_inputs = []
-    elif not isinstance(additional_inputs, list):
-        raise ValueError("Model inputs provided as {0}, these should be provided as a list".
-                         format(type(additional_inputs)))
-    else:
-        additional_inputs = additional_inputs
-
-    if not isinstance(data_file, pd.DataFrame):
-        try:
-            data = pd.read_csv(data_file)
-        except ValueError:
-            raise ValueError("Responses are not in the correct format, ensure they are provided as a .csv or .txt file")
-    else:
-        data = data_file
-
-    if 'Subject' not in data.columns or 'Response' not in data.columns:
-        raise ValueError("Data file must contain the following columns: Subject, Response")
-
-    if exclude_subjects is not None:
-        if not isinstance(exclude_subjects, list):
-            exclude_subjects = [exclude_subjects]
-        data = data[~data.Subject.isin(exclude_subjects)]
-        print "Excluded subjects: {0}".format(exclude_subjects)
-
-    subjects = np.unique(data.Subject)
-    n_subjects = len(subjects)
-
-    if 'Run' in data.columns and np.max(data['Run']) > 0:
-        n_runs = len(np.unique(data['Run']))
-
-        if exclude_runs is not None:
-            if not isinstance(exclude_runs, list):
-                exclude_runs = [exclude_runs]
-            data = data[~data.Run.isin(exclude_runs)]
-            print "Excluded runs: {0}".format(exclude_runs)
-
-    else:
-        n_runs = 1
-
-
-    if len(data) % n_subjects:
-        raise AttributeError("Unequal number of trials across subjects")
-
-    n_trials = len(data) / (n_runs * n_subjects)
-
-    sim_columns = [i for i in data.columns if '_sim' in i or 'Subject' in i]
-    if len(sim_columns) > 1:
-        sims = data[sim_columns]
-        sim_index = np.arange(0, len(data), n_trials)
-        sims = sims.iloc[sim_index]
-    else:
-        sims = None
-
-    if n_subjects > 1:
-        print "Loading multi-subject data with {0} subjects, {1} runs per subject".format(n_subjects,
-                                                                                          n_runs)
-    else:
-        print "Loading single subject data"
-
-    try:
-        trial_index = np.tile(range(0, n_trials), n_runs * n_subjects)
-    except:
-        raise ValueError("Each run must have the same number of trials")
-
-    data['Trial_index'] = trial_index
-
-    if 'Run' in data.columns:
-        data['Subject'] = data['Subject'].astype(str) + data['Run'].astype(str)
-
-    responses = np.split(data.Response.values, n_subjects * n_runs)
-    responses = np.array(responses)
-
-    if 'Outcome' in data.columns:
-        outcomes = np.split(data.Outcome.values, n_subjects * n_runs)
-        outcomes = np.array(outcomes).T
-    else:
-        outcomes = None
-
-    additional_input_data = []
-
-    for i in additional_inputs:
-        if i not in data.columns:
-            raise AttributeError("Response file has no column named {0}".format(i))
-        input_data = np.split(data[i].values, n_subjects * n_runs)
-        input_data = np.array(input_data).T
-        additional_input_data.append(input_data)
-
-    if not len(additional_inputs) and any('sim_model_input' in i for i in data.columns):
-        for i in data.columns:
-            if 'sim_model_input' in i:
-                input_data = np.split(data[i].values, n_subjects * n_runs)
-                input_data = np.array(input_data).T
-                additional_input_data.append(input_data)
-
-    print "Loaded data, {0} subjects with {1} trials * {2} runs".format(n_subjects, n_trials, n_runs)
-
-    return subjects, n_runs, responses, sims, outcomes, additional_input_data
-
-
 def load_outcomes(data):
 
     if type(data) == str:
@@ -379,7 +326,8 @@ def n_returns(f):
     n = len(return_code.split(','))
     try:
         if n > 1:
-            returns = re.search('(?<=\().+(?=\))', return_code).group().split(', ')
+            returns = re.search('(?<=return ).+', ''.join(inspect.getsourcelines(f)[0]
+                                                          ).replace('\n', '')[1:]).group()[1:-1].replace(' ', '').split(',')
         else:
             returns = re.search('(?<=return ).+', return_code).group()
     except:
@@ -425,18 +373,46 @@ def function_wrapper(f, n_returns, n_reused=1, n_model_inputs=0):
 
 def flatten_simulated(simulated):
     """
-    Takes multidimensional arrays produced by simulation and flattens them for use in dataframes
+    Reshapes a 3-D simulated data array (trials X variable size X subjects) to 2-D.
 
     Args:
         simulated: An output from simulation
 
     Returns:
-        A flattened version of the supplied output
+        A 2-D version of the supplied output
 
     """
 
-    return simulated.flatten(order='F')
+    return simulated.transpose(2, 0, 1).reshape((simulated.shape[0] * simulated.shape[2], -1))
+    # return simulated.flatten(order='F')
 
+def split_3d_array_columns(simulation_results, k):
+    """
+    Given a dictionary and key, reduces dimensions to 2_D then splits the value of that key into multiple key value pairs for each column
+    E.g. dict['value'].shape == (600, 4) becomes dict['value0'].shape == (600) with 3 other keys of the same shape ('value1', 'value2', 'value3')
+
+    Args:
+        simulation_results: Dictionary containing results from simulation
+        k: Dictionary key
+
+    """
+
+    # Check for NaNs and Infs
+    if np.any(np.isnan(simulation_results[k])):
+        warnings.warn("NaNs present in {0}".format(k))
+    if np.any(np.isinf(simulation_results[k])):
+        warnings.warn("Infs present in {0}".format(k))
+
+    # Reduce to 2D
+    simulation_results[k] = flatten_simulated(simulation_results[k])
+
+    # Split columns
+    if simulation_results[k].shape[1] > 1:
+        for i in range(simulation_results[k].shape[1]):
+            simulation_results[k + str(i)] = simulation_results[k][:, i]
+        simulation_results.pop(k)
+    else:  # Remove unnecessary dimension
+        simulation_results[k] = simulation_results[k].squeeze()
 
 def simulated_dataframe(simulation_results, outcomes, responses, model_inputs, n_runs, n_subjects, subjects,
                         learning_parameters, observation_parameters, fit_complete):
@@ -445,6 +421,15 @@ def simulated_dataframe(simulation_results, outcomes, responses, model_inputs, n
     Turns output of simulation into response file
     """
 
+    # Add outcomes and model inputs to the array
+    simulation_results['Outcome'] = outcomes
+    for n, i in enumerate(model_inputs):
+        simulation_results['sim_model_input_{0}'.format(n)] = i
+
+    # Give the dictionary different keys for each element of the output array
+    for k in simulation_results.keys():
+        split_3d_array_columns(simulation_results, k)
+        
     # Turn the result dictionary into a dataframe
     simulated_df = pd.DataFrame(simulation_results)
 
@@ -473,19 +458,20 @@ def simulated_dataframe(simulation_results, outcomes, responses, model_inputs, n
     simulated_df['Subject'] = subject_ids
     simulated_df['Run'] = run_ids
 
-    # Add outcomes and other inputs
-    simulated_df['Outcome'] = outcomes.flatten(order='F')
-
+    # Add true responses # TODO multidim
     if fit_complete:
         simulated_df['True_response'] = responses.flatten()
-    model_inputs = [flatten_simulated(i) for i in model_inputs]
-    for n, i in enumerate(model_inputs):
-        simulated_df['sim_model_input_{0}'.format(n)] = i
 
     # add parameter columns
     for p, v in learning_parameters.items():
+        v = np.stack(v).squeeze()
+        if v.ndim > 1:
+            v = v[:, 0]  # if this is a multidimensional array, take the first value (currently no support for different values across second dimension)
         simulated_df[p + '_sim'] =  np.repeat(v, n_trials)
     for p, v in observation_parameters.items():
+        v = np.stack(v).squeeze()
+        if v.ndim > 1:
+            v = v[:, 0]
         simulated_df[p + '_sim'] = np.repeat(v, n_trials)
 
 
@@ -631,6 +617,9 @@ def _check_column(data, column, missing=True, equal='Outcome'):
 
     """
 
+    if len(equal) and not equal in data.columns:  # If we have multiple outcome columns
+        equal = equal + '0'
+
     if missing:
         if np.any(data[column].isnull()):
             raise ValueError("Nans present in {0} column".format(column))
@@ -639,6 +628,43 @@ def _check_column(data, column, missing=True, equal='Outcome'):
         if np.any(np.diff([len(data[equal][data[column] == i]) for i in data[column].unique()]) != 0):
             raise ValueError("Individual values in {0} columns have different numbers of values in {1} columns, "
                              "these should all the the same".format(column, equal))
+
+
+def get_column_data(data, column, n_subjects, n_runs):
+
+    # Single column
+    if column in data.columns:
+        _check_column(data, column, missing=True, equal='')
+        results = data[column].values
+        results = results[:, np.newaxis]
+    # Multiple columns
+    elif sum([column in i for i in data.columns]) > 1:  # We have more than one outcome
+        results = get_multiple_columns(data, column)
+    else:
+        results = None
+    results = np.split(results, n_subjects * n_runs)  # Split into list of runs
+    # print(results.shape)
+    results = np.dstack(results)
+
+    if column in data.columns:
+        results = results.reshape((1, ) + results.shape)
+
+    return results
+
+def get_multiple_columns(data, type=''):
+    pat = '{0}[0-9]+'.format(type)
+    ids = [int(re.search('[0-9]+', i).group()) for i in data.columns if re.match(pat, i)]  # Find columns
+    ids = sorted(ids)  # Sort column ids
+    if not 0 in ids:  # Ensure they start from zero
+        raise ValueError("{0} column IDs should start from zero. Found IDs {1}".format(type, ids))
+    if not np.all(np.diff(ids) == 1):  # Ensure they increase by 1
+        raise ValueError("{0} columns should be sequentially numbered, i.e. ['{0}1, {0}2, ...]. Column"
+                         " IDs provided = {1}".format(type, ids))
+    print("Found {0} {1} columns in data".format(len(ids), type))
+    _check_column(data, ['{0}{1}'.format(type, id) for id in ids], missing=True, equal='')
+    result = data[['{0}{1}'.format(type, id) for id in ids]].values  # Get values
+
+    return result
 
 
 def load_data_for_simulation(outcomes, model_inputs=()):
@@ -715,7 +741,7 @@ def load_data_for_simulation(outcomes, model_inputs=()):
 
         # Check the dataframe contains everything it should
 
-        if 'Outcome' not in outcome_df.columns:
+        if 'Outcome' not in outcome_df.columns and not any(['Outcome' in i for i in outcome_df.columns]):
             raise AttributeError("Outcome data does not contain Outcome column, provided columns = {0}".format(outcome_df.columns))
 
         if len(outcome_df) < 2:
@@ -748,7 +774,7 @@ def load_data_for_simulation(outcomes, model_inputs=()):
             if not isinstance(i, str):
                 raise TypeError("Additional inputs should be strings representing column names in the outcome dataframe, "
                                 "item {0} in the list is of type {1}".format(n, type(i)))
-            if i not in outcome_df.columns:
+            if i not in outcome_df.columns and not any([i in j for j in outcome_df.columns]):
                 raise AttributeError("Outcome dataframe has no column named {0}".format(i))
 
         # Get outcome values and additional input values and turn them into a numpy array
@@ -756,14 +782,9 @@ def load_data_for_simulation(outcomes, model_inputs=()):
 
         # Iterate over outcome column and additional input columns
         for c in columns:
-            # Check for missing data
-            _check_column(outcome_df, c, missing=True, equal='')
-
-            # Split into multidimensional array
-            vals = np.split(outcome_df[c].values, n_subjects * n_runs)
-            vals = np.array(vals).T
+            vals = get_column_data(outcome_df, c, n_subjects, n_runs)
             # Check that things are the right way round
-            assert vals.shape[1] == n_subjects * n_runs
+            assert vals.shape[2] == n_subjects * n_runs
             value_list.append(vals)
 
     else:
@@ -785,6 +806,99 @@ def load_data_for_simulation(outcomes, model_inputs=()):
                                                                                             outcomes.shape))
 
     return outcomes, model_inputs, n_runs, n_subjects, outcome_df
+
+
+def load_data(data_file, exclude_subjects=None, exclude_runs=None, additional_inputs=None):
+
+    # TODO rewrite all of this because it's a mess
+
+    if additional_inputs is None:
+        additional_inputs = []
+    elif not isinstance(additional_inputs, list):
+        raise ValueError("Model inputs provided as {0}, these should be provided as a list".
+                         format(type(additional_inputs)))
+    else:
+        additional_inputs = additional_inputs
+
+    if not isinstance(data_file, pd.DataFrame):
+        try:
+            data = pd.read_csv(data_file)
+        except ValueError:
+            raise ValueError("Responses are not in the correct format, ensure they are provided as a .csv or .txt file")
+    else:
+        data = data_file
+
+    if 'Subject' not in data.columns or not any(['Response' in i for i in data.columns]):
+        raise ValueError("Data file must contain the following columns: Subject, Response")
+
+    if exclude_subjects is not None:
+        if not isinstance(exclude_subjects, list):
+            exclude_subjects = [exclude_subjects]
+        data = data[~data.Subject.isin(exclude_subjects)]
+        print "Excluded subjects: {0}".format(exclude_subjects)
+
+    subjects = np.unique(data.Subject)
+    n_subjects = len(subjects)
+
+    if 'Run' in data.columns and np.max(data['Run']) > 0:
+        n_runs = len(np.unique(data['Run']))
+
+        if exclude_runs is not None:
+            if not isinstance(exclude_runs, list):
+                exclude_runs = [exclude_runs]
+            data = data[~data.Run.isin(exclude_runs)]
+            print "Excluded runs: {0}".format(exclude_runs)
+
+    else:
+        n_runs = 1
+
+
+    if len(data) % n_subjects:
+        raise AttributeError("Unequal number of trials across subjects")
+
+    n_trials = len(data) / (n_runs * n_subjects)
+
+    sim_columns = [i for i in data.columns if '_sim' in i or 'Subject' in i]
+    if len(sim_columns) > 1:
+        sims = data[sim_columns]
+        sim_index = np.arange(0, len(data), n_trials)
+        sims = sims.iloc[sim_index]
+    else:
+        sims = None
+
+    try:
+        trial_index = np.tile(range(0, n_trials), n_runs * n_subjects)
+    except:
+        raise ValueError("Each run must have the same number of trials")
+
+    data['Trial_index'] = trial_index
+
+    if 'Run' in data.columns:
+        data['Subject'] = data['Subject'].astype(str) + data['Run'].astype(str)
+
+    # Responses and outcomes
+    responses = get_column_data(data, 'Response', n_subjects, n_runs)
+    outcomes = get_column_data(data, 'Outcome', n_subjects, n_runs)
+
+    # Other inputs for the model
+    additional_input_data = []
+
+    for i in additional_inputs:
+        if not any([i in j for j in data.columns]):
+            raise AttributeError("Response file has no column containing {0}".format(i))
+        input_data = get_column_data(data, i, n_subjects, n_runs)
+        additional_input_data.append(input_data)
+
+    if not len(additional_inputs) and any('sim_model_input' in i for i in data.columns):
+        for i in data.columns:
+            if 'sim_model_input' in i:
+                input_data = np.split(data[i].values, n_subjects * n_runs)
+                input_data = np.array(input_data).T
+                additional_input_data.append(input_data)
+
+    print "Loaded data, {0} subjects with {1} trials * {2} runs".format(n_subjects, n_trials, n_runs)
+
+    return subjects, n_runs, responses, sims, outcomes, additional_input_data
 
 def parameter_check(parameters, sim=False):
 

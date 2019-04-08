@@ -125,12 +125,12 @@ class _PyMCModel(Continuous):
     Instance of PyMC3 model used to fit models. Used internally by DMModel class - do not use directly.
     """
 
-    def __init__(self, context, learning_models, learning_parameters, observation_model, observation_parameters, responses,
-                 hierarchical, offset, n_subjects, time, n_runs, response_transform, mle=False, outcomes=None,
-                 model_inputs=None, logp_function=None, vars=None, minibatch=0, logp_args=None, *args, **kwargs):
+    def __init__(self, learning_models, learning_parameters, observation_model, observation_parameters, responses,
+                 hierarchical,
+                 offset, n_subjects, time, n_runs, response_transform, mle=False, outcomes=None, model_inputs=None,
+                 logp_function=None, vars=None, minibatch=0, logp_args=None, *args, **kwargs):
         super(_PyMCModel, self).__init__(*args, **kwargs)
 
-        self.context = context
         self.fit_complete = False
         self.learning_model = learning_models[0]
         self.__learning_model_initial = learning_models[1]
@@ -156,7 +156,7 @@ class _PyMCModel(Continuous):
             self.logp_args)  # things get messy if the same logp args are used for different models
 
         for n, input in enumerate(self.model_inputs):
-            self.model_inputs[n] = dict(input=input)
+            self.model_inputs[n] = dict(input=input, taps=[-1])
 
         # TODO need to check for inconsistent number of model inputs and arguments in model function
 
@@ -170,6 +170,7 @@ class _PyMCModel(Continuous):
         self.dynamic_parameters, self.static_parameters, self.observation_parameters = \
             _initialise_parameters(self.learning_parameters, self.observation_parameters, self.n_subjects, self.n_runs,
                                    mle, hierarchical, offset, minibatch, n_subjects)
+
         # print self.dynamic_parameters[0].pymc_distribution.dmpy_name
 
         ## learning models with multiple outputs
@@ -181,6 +182,9 @@ class _PyMCModel(Continuous):
         if self.observation_model is not None:
             self.__n_observation_returns, self.__observation_return_names = n_returns(self.observation_model)
 
+        self.responses = self.responses
+        if self.responses.ndim == 1:
+            self.responses = self.responses.reshape(self.responses.shape[0], 1)
         if self.logp_function == 'normal':
             # Assume that if there's no observation model we're using value as our response variable
             if self.observation_model is None:
@@ -213,7 +217,8 @@ class _PyMCModel(Continuous):
         """
         Function to run the learning and observation models on the provided outcome data
 
-        # TODO Need to make sure order of arguments is right OR figure out a way to match scan arguments to function arguments
+        Need to make sure order of arguments is right
+        OR figure out a way to match scan arguments to function arguments
 
         Args:
             x: Outcome data
@@ -223,8 +228,9 @@ class _PyMCModel(Continuous):
         """
 
         # THIS BIT IS PROBABLY HORRIBLY INEFFICIENT
-        static_parameters_reshaped = [np.repeat(i, n_runs).astype('float64') for i in static_parameters]
-        dynamic_parameters_reshaped = [T.unbroadcast(T.tile(np.repeat(i, n_runs).astype('float64'), (i.output_info_size, 1)), 0) for i in dynamic_parameters]  # TODO
+        static_parameters_reshaped = [T.repeat(i, n_runs).astype('float64') for i in static_parameters]
+        dynamic_parameters_reshaped = [T.repeat(i, n_runs, axis=1).astype('float64') for i in dynamic_parameters]
+
         if observation_parameters[0] is not None:
             observation_parameters_reshaped = [np.repeat(i.pymc_distribution, self.n_runs) for i in
                                                observation_parameters]
@@ -234,18 +240,21 @@ class _PyMCModel(Continuous):
         # Time should be of shape n_trials X n_subjects (it is assumed to have one value per trial)
         time = T.ones((x.shape[0], x.shape[2])) * T.arange(0, x.shape[0]).reshape((x.shape[0], 1))
 
-        #
-        # for i in dynamic_parameters_reshaped:
-        #     i = theano.printing.Print(str(i))(i.type)
+        model_inputs_initial = copy.deepcopy(self.model_inputs)
+        for i in model_inputs_initial:
+            i['input'] = i['input']
+            i.pop('taps')
 
-        # Scan loop - iterates over trials
+        outputs_info_theano = dynamic_parameters_reshaped + [None] * (self.__n_learning_returns - self.__n_dynamic)
+        
+        print(x.shape)
+
         try:
-            value, self.context.updates = scan(fn=self.learning_model,
+            value, updates = scan(fn=self.learning_model, profile=True,
                                   sequences=[dict(input=x), dict(input=time)] + self.model_inputs,
-                                  outputs_info=dynamic_parameters_reshaped + [None] * (self.__n_learning_returns - self.__n_dynamic),
+                                  outputs_info=outputs_info_theano,
                                   non_sequences=static_parameters_reshaped)
 
-        # Handle exceptions that might happen when using scan
         except ValueError as e:
             if "None as outputs_info" in e.message:
                 raise ValueError("Mismatch between number of dynamic outputs and number of dynamic inputs. \n"
@@ -262,6 +271,7 @@ class _PyMCModel(Continuous):
                 n_inputs_provided = len(self.model_inputs)
                 n_dynamic_provided = len(dynamic_parameters_reshaped)
                 n_static_provided = len(static_parameters_reshaped)
+                print n_inputs_provided, n_dynamic_provided, n_static_provided
                 raise TypeError(
                     "Incorrect number of arguments provided to the learning model function. \nFunction takes {0} "
                     "arguments, provided {1} (outcome and time plus {2} additional inputs; \n{3} dynamic parameters;"
@@ -281,24 +291,23 @@ class _PyMCModel(Continuous):
                                 'Check for typos in argument and variable names')
             else:
                 raise e
-
-        # Make sure value is a list
+        
         if not len(value):  # TODO doesn't work if function only returns tuple of one value
             value = [value]
 
         # Add in outputs info on first trial
-        for n, i in enumerate(dynamic_parameters_reshaped):
-            value[n] = T.concatenate([i.reshape((1, i.shape[0], i.shape[1])), value[n][:-1, ...]])
+        for n, i in enumerate(outputs_info_theano):
+            if i is not None:
+                value[n] = T.concatenate([i.reshape((1, i.shape[0], i.shape[1])), value[n]])
 
-        # Dynamic inputs to observation model
         observation_dynamics = [value[i] for i in self.__observation_dynamic_inputs]
 
-        # Observation model if specified
         if self.observation_model is not None:
             prob = self.observation_model(*observation_dynamics + observation_parameters_reshaped)
         else:
-            prob = value  # Return raw outputs
+            prob = value
 
+        # TODO return everything
         return prob
 
     def get_samples(self, static_parameters=(), dynamic_parameters=(), observation_parameters=(), size=1):
@@ -363,13 +372,23 @@ class _PyMCModel(Continuous):
             Log likelihood
         """
 
-        # Run the model
         model_output = self.get_value(x, self.static_parameters, self.dynamic_parameters, self.observation_parameters,
                                       self.n_runs)
 
-        # Match outputs from the model to inputs for the logp function
+        # Match outputs of model to logp inputs
+        # All variables (model outputs, responses etc) are of shape (n_trials, n_values, n_subjects), where n_values is e.g.
+        # number of bandits in a multi-armed bandit task
+        # Logp functions expect a 2D input, so we reshape to (n_trials * n_subjects, n_values)
+
+        def reshape_model_output(output):
+            n_trials = output.shape[0]
+            n_values = output.shape[1]
+            n_subjects = output.shape[2]
+            return np.transpose(output, (0, 2, 1)).reshape((n_trials * n_subjects, n_values))
+
         for arg, val in self.logp_args.iteritems():
             if isinstance(val, str):
+
                 if val not in self.__learning_return_names and val not in self.__observation_return_names:
                     raise AttributeError("Learning and observation functions "
                                          "has no return named {0}, "
@@ -382,24 +401,34 @@ class _PyMCModel(Continuous):
                     if self.observation_model is not None:
                         for n, i in enumerate(self.__observation_return_names):
                             if i == val:
-                                self.logp_args[arg] = reduce_3D(model_output[n])  # Logp functions require 2D inputs
+                                self.logp_args[arg] = reshape_model_output(model_output[n])
 
                     else:
                         for n, i in enumerate(self.__learning_return_names):
                             if i == val:
-                                self.logp_args[arg] = reduce_3D(model_output[n])
+                                # self.logp_args[arg] = model_output[n]
+                                self.logp_args[arg] = reshape_model_output(model_output[n])
+                                # self.logp_args[arg] = theano.printing.Print('output', attrs = [ 'shape' ])(self.logp_args[arg])
 
         # self.logp_args['total_size'] = self.responses.shape
 
-        # Set up the logp function
         if self.logp_distribution is None:  # for some reason this gets compiled multiple times
             model_vars = copy.copy(self.vars)
             self.logp_distribution = self.logp_function(**self.logp_args)
             self.logp_vars = [i.name for i in self.vars if i not in model_vars]
 
-        # Get logp
-        # logp = T.sum(self.logp_distribution.logp(reduce_3D(self.responses)[:, 0].astype('int8')))  # TODO might need to be changed
-        logp = T.sum(self.logp_distribution.logp(reduce_3D(self.responses)))  # TODO might need to be changed
+        responses_nonan = T.switch(T.isnan(self.responses), 0., self.responses)
+
+        # responses = theano.printing.Print('EEE')(self.responses.reshape((self.responses[n].shape[0] * self.responses[n].shape[1], self.responses[n].shape[2])).shape)
+        # print(responses)
+        responses = T.flatten(reshape_model_output(self.responses))
+        # responses = theano.printing.Print('PROB', attrs = [ 'shape' ])(responses)
+        logp = T.sum(self.logp_distribution.logp(responses))
+        # logp = 5
+
+        
+        # logp = T.sum(self.logp_distribution.logp(self.responses.reshape((self.responses[n].shape[0] * self.responses[n].shape[1], self.responses[n].shape[2]))))
+        # logp = 5
 
         return logp
 
@@ -511,8 +540,8 @@ class DMModel():
                                                          len(self.model_inputs))
 
         with pm.Model(theano_config={'compute_test_value': 'ignore', 'mode': 'FAST_RUN',
-                                     'exception_verbosity': 'high'}) as model:
-            m = _PyMCModel('model', model, learning_models=(self.learning_model, self.__learning_model_initial),
+                                     'exception_verbosity': 'high', 'floatX': 'float32'}) as model:
+            m = _PyMCModel('model', learning_models=(self.learning_model, self.__learning_model_initial),
                            learning_parameters=self.learning_parameters,
                            observation_model=self.observation_model, vars=model.vars, minibatch=minibatch,
                            observation_parameters=[self.observation_parameters, self.__observation_dynamic_inputs],
@@ -531,6 +560,7 @@ class DMModel():
 
         self._pymc3_model = model
 
+        print "Created model"
 
     def fit(self, responses, outcomes=None, fit_method='MLE', hierarchical=False, plot=True, fit_stats=False,
             recovery=False,
@@ -584,11 +614,11 @@ class DMModel():
             if not callable(response_transform):
                 raise TypeError("Transformation for response variable should be provided as a function, provided type"
                                 " {0}".format(type(response_transform)))
+            elif len(responses.shape) > 2:
+                warnings.warn("Response transforms might not work on multidimensional responses")
+                self.response_transform = response_transform
             else:
                 self.response_transform = response_transform
-            if len(responses.shape) > 2:
-                warnings.warn("Response transforms might not work on multidimensional responses")
-
         elif self.logp_function == 'beta':
             self.response_transform = beta_response_transform  # transform to avoid zeros and ones
         else:
@@ -598,7 +628,7 @@ class DMModel():
             outcomes = loaded_outcomes
         else:
             outcomes = load_outcomes(outcomes)
-
+        # print(responses)
         self.subjects = subjects
         n_subjects = len(subjects)
 
@@ -606,6 +636,14 @@ class DMModel():
             fit_kwargs = {}
         if sample_kwargs is None:
             sample_kwargs = {}
+
+        # make sure outcomes and responses look nice
+        if responses.shape[0] == 1:
+            responses = responses[0]
+
+        if len(responses.shape) < 2:
+            responses = responses.reshape(1, responses.shape[0])
+
 
         if responses.shape[0] != outcomes.shape[0]:
             raise ValueError("Responses ({0}) and outcomes ({1}) have unequal lengths".format(responses.shape[0],
@@ -620,6 +658,8 @@ class DMModel():
 
         time = np.tile(np.arange(0, outcomes.shape[0]), (outcomes.shape[1], 1)).T
 
+        transformed_responses = self.response_transform(responses)
+
         if self._pymc3_model is None or self._fit_method != fit_method.lower() or n_subjects \
                 != self.n_subjects or self._hierarchical != hierarchical or \
                 len(self.model_inputs) != len(self.theano_model_inputs):
@@ -630,7 +670,6 @@ class DMModel():
             self.logp_function = self.logp_function
 
             if minibatch > 0:
-                transformed_responses = self.response_transform(responses)
                 mb_transformed_responses = pm.Minibatch(transformed_responses, batch_size=[minibatch, Ellipsis])
                 mb_outcomes = pm.Minibatch(outcomes, batch_size=[Ellipsis, minibatch])
                 mb_time = pm.Minibatch(time, batch_size=[Ellipsis, minibatch])
@@ -640,7 +679,7 @@ class DMModel():
                 self.theano_model_inputs = [pm.Minibatch(i.astype(np.float64),
                                                          batch_size=[Ellipsis, minibatch]) for i in self.model_inputs]
             else:
-                self.responses = theano.shared(responses)
+                self.responses = theano.shared(transformed_responses)
                 self.outcomes = theano.shared(outcomes)
                 self.theano_model_inputs = [theano.shared(i.astype(np.float64)) for i in self.model_inputs]
                 self.time = theano.shared(time)
@@ -649,7 +688,6 @@ class DMModel():
             self.n_runs = theano.shared(n_runs)
             self._create_model(mle=mle, hierarchical=hierarchical, offset=offset, minibatch=minibatch)
 
-        transformed_responses = self.response_transform(responses)
         if minibatch > 0:
             mb_transformed_responses = pm.Minibatch(transformed_responses, batch_size=[minibatch, Ellipsis])
             mb_outcomes = pm.Minibatch(outcomes, batch_size=[Ellipsis, minibatch])
@@ -719,11 +757,13 @@ class DMModel():
             print "Performing non-hierarchical model fitting for {0} subjects".format(self.n_subjects)
 
         with self._pymc3_model:
-
-            self.trace = pm.sample(**kwargs)
+            step = pm.NUTS(profile=True)
+            self.trace = pm.sample(step=step, **kwargs)
 
             if plot:
                 traceplot(self.trace)
+
+        step.leapfrog1_dE.profile.summary()
 
         self.fit_values = pm.summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
 
@@ -851,6 +891,9 @@ class DMModel():
                         untransformed_params[p.name] = self.raw_fit_values[m]
 
         self.fit_values = untransformed_params
+
+        for p, v in self.fit_values.items():
+            self.fit_values[p] = v.squeeze()
 
         self.parameter_table = pd.DataFrame(self.fit_values)
         self.parameter_table['Subject'] = self.subjects
@@ -1133,18 +1176,15 @@ class DMModel():
         self.__parameter_values = self.sim_learning_parameters.values() + self.sim_observation_parameters.values()
 
         # Get combinations
-        # TODO parameters with multiple columns
         p_combinations, n_subjects = self._create_parameter_combinations(combinations, self.__parameter_values, n_runs,
                                                                          n_subjects, params_from_fit)
 
-        # put combinations of parameters back into dictionaries - there's probably a more efficient way of doing all this
+        # put combinations of parameters back into dictionaries
         for n, p in enumerate(self.sim_learning_parameters.keys() + self.sim_observation_parameters.keys()):
             if p in self.sim_learning_parameters.keys():
-                self.sim_learning_parameters[p] = (p_combinations[:, n].T if p_combinations[:, n].shape[1] == 1
-                                                   else p_combinations[:, n])
+                self.sim_learning_parameters[p] = p_combinations[:, n]
             else:
-                self.sim_observation_parameters[p] = (p_combinations[:, n].T if p_combinations[:, n].shape[1] == 1
-                                                   else p_combinations[:, n])
+                self.sim_observation_parameters[p] = p_combinations[:, n]
 
         # each parameter now has a list of values
 
@@ -1161,7 +1201,7 @@ class DMModel():
             for p, v in self.sim_learning_parameters.iteritems():
                 if p == i.name:
                     if i.dynamic:
-                        sim_dynamic.append(np.float64(v))
+                        sim_dynamic.append([np.float64(vv) for vv in v])
                     else:
                         sim_static.append(np.float64(v))
                     match = True
@@ -1213,13 +1253,7 @@ class DMModel():
                         outputs_info]
 
         if self._simulate_function == None:
-            try:
-                self._define_simulate_function(outputs_info, sim_static, model_inputs, sim_observation)
-            except NameError as e:
-                raise NameError("Encountered an error when simulating from the model: {0}. This probably means "
-                                "the function returns a variable which is not defined within the function".format(e))
-            except:
-                raise e
+            self._define_simulate_function(outputs_info, sim_static, model_inputs, sim_observation)
 
         # Call the function
         sim_data = self._simulate_function(outcomes, time, *(model_inputs + sim_static +
@@ -1255,7 +1289,7 @@ class DMModel():
         else:
             true_responses = None
         self.simulation_results = simulated_dataframe(self._simulation_results_dict, outcomes, true_responses,
-                                                      model_inputs, n_runs, n_subjects, outcomes.shape[0], self.subjects,
+                                                      model_inputs, n_runs, n_subjects, self.subjects,
                                                       self.sim_learning_parameters, self.sim_observation_parameters,
                                                       self.fit_complete)
 
@@ -1324,7 +1358,7 @@ class DMModel():
                 for sub in range(len(p_combinations)):  # iterate over subjects
                     for p in range(len(p_combinations[sub])):  # iterate over parameters
                         p_combinations[sub][p] = np.repeat(p_combinations[sub][p], n_runs, axis=0)
-                p_combinations = np.repeat(p_combinations, n_runs, axis=1)
+                p_combinations = np.repeat(p_combinations, n_runs, axis=0)
                 p_combinations = np.tile(p_combinations, (n_subjects, 1))
 
         # New n_subjects = number of subjects * number of parameter combinations
@@ -1358,13 +1392,13 @@ class DMModel():
                 outputs_info_theano.append(T.matrix("outputs_info_{0}".format(n), dtype='float64'))
 
         for n, i in enumerate(sim_static):
-            sim_static_theano.append(T.matrix("sim_static_{0}".format(n), dtype='float64'))
+            sim_static_theano.append(T.vector("sim_static_{0}".format(n), dtype='float64'))
         for n, i in enumerate(sim_observation):
-            sim_observation_theano.append(T.matrix("sim_observation_{0}".format(n), dtype='float64'))
+            sim_observation_theano.append(T.vector("sim_observation_{0}".format(n), dtype='float64'))
         # sequences for scan should be in format (n_trials, n_subjects)
 
         # Run the learning model
-        value, updates = scan(fn=self.learning_model,
+        value, updates = scan(fn=self.learning_model, 
                               sequences=[dict(input=outcomes_theano), dict(input=time_theano)] +
                                         [dict(input=i) for i in model_inputs_theano],
                               outputs_info=outputs_info_theano,
@@ -1531,8 +1565,8 @@ class Parameter():
 
     """
 
-    def __init__(self, name, distribution, lower_bound=None, upper_bound=None, mean=1., variance=None, dynamic=False,
-                 shape=None, size=1, **kwargs):
+    def __init__(self, name, distribution, lower_bound=None, upper_bound=None, mean=None, variance=None, dynamic=False, alpha=None, beta=None,
+                 size=1, **kwargs):
 
         """
 
@@ -1559,7 +1593,7 @@ class Parameter():
             self.fixed = False
 
         # Only dynamic parameters should be shaped (I think)
-        if dynamic == False and shape is not None:
+        if dynamic == False and size is not 1:
             raise AttributeError("Only dynamic parameters can be given a shape")
 
         self.name = name
@@ -1568,8 +1602,7 @@ class Parameter():
         self.lower_bound = lower_bound
         self.upper_bound = upper_bound
         self.__pymc_kwargs = kwargs
-        self.shape = shape
-        self.size = size
+        self.size = size  # Extra dimension
 
         if lower_bound:
             self.lower_bound = lower_bound
@@ -1578,6 +1611,8 @@ class Parameter():
 
         self.mean = mean
         self.variance = variance
+        self.alpha = alpha
+        self.beta = beta       
 
         self.transform_method = None
 
