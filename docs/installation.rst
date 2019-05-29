@@ -69,6 +69,10 @@ Or try installing MKL 2017 instead:
 conda uninstall mkl=2018
 conda install mkl=2017
 
+Intel MKL FATAL ERROR: Cannot load mkl_intel_thread.dll
+
+Not sure exactly what this means, but installing mkl 2017 seems to help.
+
 
 Errors post-installation
 ------------------------
@@ -82,4 +86,5 @@ DMpy is built on top of Theano, and Theano is a rather temperamental package whi
     conda install mkl mkl-service m2w64-toolchain libpython
 
     conda install theano
+
 

@@ -139,3 +139,13 @@ Simulating data from real parameter estimates
 ---------------------------------------------
 
 We often wish to produce simulated data from the parameter values estimated from fitting the model to real subjects' data. This can be done by simply calling the ``simulate()`` method of a model after fitting has been performed without providing any values for the learning model or observation model parameters. DMpy will use the estimated value for each subject and simulate data from these values. Additionally, if the ``plot_against_true`` argument is set to ``True``, a plot will be produced showing the simulated data for each subject along with their true data for comparison.
+
+
+Technical stuff
+---------------
+
+Mostly here to help me remember how things work
+
+Inputs to the core functions (``get_value`` and ``define_simulation_function``) expect outcomes/responses/dynamic inputs to to have the shape ``n_trials X n_columns X n_subjects``, where ``n_columns`` is the 2nd dimension of the input (e.g. if you have a four arm bandit, this might have four dimensions.
+
+Static parameters are expected to have the shape ``n_columns X n_subjects``.

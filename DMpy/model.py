@@ -46,6 +46,8 @@ sns.set_palette("Set1")
 # TODO cauchy distribution + others
 # TODO subject specific model fits (DIC etc)
 
+# TODO models currently run if given a parameter rather than an input (e.g. if given 5 parameters and 0 inputs hwen expecting 4 parameters and 1 input everything works, but it's wrong)
+
 
 def _initialise_parameters(learning_parameters, observation_parameters, n_subjects, n_runs, mle, hierarchical):
 
@@ -225,7 +227,7 @@ class _PyMCModel(Continuous):
 
         time = T.ones_like(x) * T.arange(0, x.shape[0]).reshape((x.shape[0], 1))
 
-        # print [dict(input=x, taps=[-1]), dict(input=time, taps=[-1])] + self.model_inputs
+        # print([dict(input=x, taps=[-1]), dict(input=time, taps=[-1])] + self.model_inputs
 
         model_inputs_initial = copy.deepcopy(self.model_inputs)
         for i in model_inputs_initial:
@@ -338,8 +340,10 @@ class _PyMCModel(Continuous):
             self.logp_distribution = self.logp_function(**self.logp_args)
             self.logp_vars = [i.name for i in self.vars if i not in model_vars]
 
-        responses_nonan = T.switch(T.isnan(self.responses), 0., self.responses)
-        logp = T.sum(self.logp_distribution.logp(self.responses))
+        logp = self.logp_distribution.logp(self.responses)
+        logp = T.switch(T.isinf(logp), 0, logp)
+        logp = T.switch(T.isnan(logp), 0, logp)
+        logp = T.sum(logp)
 
         return logp
 
@@ -470,11 +474,11 @@ class DMModel():
             params = [i for j in params for i in j]
             self.params = [p for p in params if p is not None]
 
-            # print m.distribution.unobserved_RVs
+            # print(m.distribution.unobserved_RVs
 
         self._pymc3_model = model
 
-        print "Created model"
+        print("Created model")
 
 
     def fit(self, responses, outcomes=None, fit_method='MLE', hierarchical=False, plot=True, fit_stats=False, recovery=False,
@@ -620,7 +624,7 @@ class DMModel():
 
         sns.set_palette("deep")
 
-        print "Fitting model using NUTS"
+        print("Fitting model using NUTS")
         start = timer()
 
         # check data is correct
@@ -633,10 +637,10 @@ class DMModel():
             hierarchical = False
 
         elif hierarchical and self.n_subjects > 1:
-            print "Performing hierarchical model fitting for {0} subjects".format(self.n_subjects)
+            print("Performing hierarchical model fitting for {0} subjects".format(self.n_subjects))
 
         elif not hierarchical and self.n_subjects > 1:
-            print "Performing non-hierarchical model fitting for {0} subjects".format(self.n_subjects)
+            print("Performing non-hierarchical model fitting for {0} subjects".format(self.n_subjects))
 
         with self._pymc3_model:
 
@@ -650,8 +654,8 @@ class DMModel():
         self.parameter_table = parameter_table(pm.summary(self.trace), self.subjects, self._DMpy_model.distribution.logp_vars)
 
         if not suppress_table:
-            print "\nPARAMETER ESTIMATES\n"
-            print self.parameter_table
+            print("\nPARAMETER ESTIMATES\n")
+            print(self.parameter_table)
 
         if recovery and self.sims is not None:
             self.recovery_correlations = self.recovery()
@@ -666,7 +670,7 @@ class DMModel():
         #self.log_likelihood, self.BIC, self.AIC = model_fit(rl.logp, self.fit_values, rl.vars)
         self.fit_complete = True
         end = timer()
-        print "Finished model fitting in {0} seconds".format(end - start)
+        print("Finished model fitting in {0} seconds".format(end - start))
 
 
     def _fit_variational(self, plot=True, hierarchical=True, fit_stats=False, recovery=True, suppress_table=False,
@@ -674,9 +678,9 @@ class DMModel():
 
         sns.set_palette("deep")
 
-        print "\n-------------------" \
+        print("\n-------------------" \
               "Fitting model using ADVI" \
-              "-------------------\n"
+              "-------------------\n")
         start = timer()
         # check data is correct TODO change for multi-subject data
         # assert len(outcomes) == len(observed), "Outcome and observed data are " \
@@ -688,17 +692,17 @@ class DMModel():
             hierarchical = False
 
         elif hierarchical and self.n_subjects > 1:
-            print "Performing hierarchical model fitting for {0} subjects".format(self.n_subjects)
+            print("Performing hierarchical model fitting for {0} subjects".format(self.n_subjects))
 
         elif not hierarchical and self.n_subjects > 1:
-            print "Performing non-hierarchical model fitting for {0} subjects".format(self.n_subjects)
+            print("Performing non-hierarchical model fitting for {0} subjects".format(self.n_subjects))
 
         with self._pymc3_model:
 
             self.approx = fit(**fit_kwargs)
             self.trace = sample_approx(self.approx, **sample_kwargs)
 
-            print "Done"
+            print("Done")
 
         if plot:
             traceplot(self.trace)
@@ -708,8 +712,8 @@ class DMModel():
         self.parameter_table = parameter_table(pm.summary(self.trace), self.subjects, self._DMpy_model.distribution.logp_vars)
 
         if not suppress_table:
-            print "\nPARAMETER ESTIMATES\n"
-            print self.parameter_table
+            print("\nPARAMETER ESTIMATES\n")
+            print(self.parameter_table)
 
         if recovery and self.sims is not None:
             self.recovery_correlations = self.recovery()
@@ -722,20 +726,20 @@ class DMModel():
 
         # self.log_likelihood, self.BIC, self.AIC = model_fit(rl.logp, self.fit_values, rl.vars)
         end = timer()
-        print "Finished model fitting in {0} seconds".format(end - start)
+        print("Finished model fitting in {0} seconds".format(end - start))
 
 
     def _fit_MAP(self, plot=True, mle=False, recovery=True, suppress_table=False, **kwargs):
 
 
         if mle:
-            print "\n-------------------" \
+            print("\n-------------------" \
                   "Finding MLE estimate" \
-                  "-------------------\n"
+                  "-------------------\n")
         else:
-            print "\n-------------------" \
+            print("\n-------------------" \
                   "Finding MAP estimate" \
-                  "-------------------\n"
+                  "-------------------\n")
 
         start = timer()
 
@@ -743,7 +747,7 @@ class DMModel():
         # assert len(outcomes) == len(observed), "Outcome and observed data are " \
         #                                        "different lengths ({0} and ({1}".format(len(outcomes), len(observed))
 
-        print "Performing model fitting for {0} subjects".format(self.n_subjects)
+        print("Performing model fitting for {0} subjects".format(self.n_subjects))
 
         self._model = {}
         self.map_estimate = {}
@@ -783,28 +787,28 @@ class DMModel():
             self.recovery_correlations = self.recovery()
 
         if not suppress_table:
-            print "\nPARAMETER ESTIMATES\n"
-            print self.parameter_table
+            print("\nPARAMETER ESTIMATES\n")
+            print(self.parameter_table)
 
         self.log_likelihood, self.BIC, self.AIC = model_fit(self._pymc3_model.logp_nojac, self.map_estimate,
                                                             self._pymc3_model.vars, self.outcomes, self.n_subjects)
 
         self.WAIC = None
         end = timer()
-        print "Finished model fitting in {0} seconds".format(end-start)
+        print("Finished model fitting in {0} seconds".format(end-start))
 
 
     def fit_stats(self):
 
         if self.WAIC is None and not self.fit_complete:
 
-            print "Calculating WAIC..."
+            print("Calculating WAIC...")
             self.WAIC = pm.waic(self.trace, self._pymc3_model).WAIC
-            print "WAIC = {0}".format(self.WAIC)
-            print "Calculated fit statistics"
+            print("WAIC = {0}".format(self.WAIC))
+            print("Calculated fit statistics")
 
         elif self.fit_complete:
-            print "WAIC = {0}".format(self.WAIC)
+            print("WAIC = {0}".format(self.WAIC))
 
         else:
             raise AttributeError("Model has not been fit")
@@ -904,8 +908,8 @@ class DMModel():
 
         self.model_fit_individual = fit_table
 
-        # print "Individual model fit statistics"
-        # print self.model_fit_individual
+        # print("Individual model fit statistics"
+        # print(self.model_fit_individual
 
         return self.model_fit_individual
 
@@ -1169,9 +1173,9 @@ class DMModel():
         # Add noise to the response variable
         if noise_sd > 0 or noise_mean > 1:
             self.simulation_results[response_variable + '_clean'] = self.simulation_results[response_variable]
-            print "Adding gaussian noise to response variable {0} with mean {1} and SD {2}".format(response_variable,
+            print("Adding gaussian noise to response variable {0} with mean {1} and SD {2}".format(response_variable,
                                                                                                    noise_mean,
-                                                                                                   noise_sd)
+                                                                                                   noise_sd))
             self.simulation_results[response_variable] = _add_noise(self.simulation_results[response_variable],
                                                                     noise_mean, noise_sd, lower_bound=np.min(outcomes),
                                                                     upper_bound=np.max(outcomes))
@@ -1195,7 +1199,7 @@ class DMModel():
 
         # Save to csv
 
-        print "Saving simulated results to {0}".format(output_file)
+        print("Saving simulated results to {0}".format(output_file))
         if len(output_file):
             self.simulation_results.to_csv(output_file, index=False)
 
@@ -1234,7 +1238,7 @@ class DMModel():
         if not params_from_fit:
             n_subjects = n_combinations * n_subjects
 
-        print "Simulating data from {0} sets of parameter values".format(len(p_combinations))
+        print("Simulating data from {0} sets of parameter values".format(len(p_combinations)))
 
         return p_combinations, n_subjects
 
@@ -1318,7 +1322,7 @@ class DMModel():
             self.parameter_table = pd.merge(self.parameter_table, self.sims.groupby('Subject').mean().reset_index(),
                                             on='Subject')
             self._recovery_run = True
-        print "Performing parameter recovery tests..."
+        print("Performing parameter recovery tests...")
         parameter_values = []
         parameter_values_sim = []
         n_p_free = len(fit_params)
@@ -1421,7 +1425,6 @@ class DMModel():
             ax.set_ylabel('Estimated', fontweight=fontweight)
             ax.set_title("Posterior correlations", fontweight=fontweight)
             plt.tight_layout()
-
         else:
             se_cor = None
             warnings.warn('Only one parameter value provided, cannot perform recovery correlation tests')
@@ -1644,4 +1647,3 @@ class SimulationResults():
 
 
             plt.tight_layout()
-

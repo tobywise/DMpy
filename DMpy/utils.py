@@ -10,7 +10,7 @@ import sys
 import os
 from io import BytesIO as StringIO
 import contextlib
-import urllib2
+# from urllib.request import urlopen
 import copy
 
 def get_transforms(bounded_parameter):
@@ -146,9 +146,6 @@ def bic(variables, n_subjects, outcomes, likelihood, individual=False):
         BIC = (len(variables) * n_subjects) * np.log(np.prod(outcomes.shape.eval())) - 2. * likelihood
 
     else:
-        print len(variables)
-        print outcomes.shape[0]
-        print likelihood
         BIC = len(variables) * np.log(outcomes.shape[0]) - 2. * likelihood
 
     return BIC
@@ -181,7 +178,7 @@ def model_fit(logp, fit_values, variables, outcome, n_subjects):
     """
     Calculates model fit statistics (log likelihood, BIC, AIC)
     """
-    print "calculating fit stats"
+    print("calculating fit stats")
 
     variable_names = [i.name for i in variables]
 
@@ -194,7 +191,7 @@ def model_fit(logp, fit_values, variables, outcome, n_subjects):
     BIC = bic_regression(variables, n_subjects, outcome, likelihood)
     AIC = aic(variables, n_subjects, likelihood)
 
-    print "Model likelihood = {0}, BIC = {1}, AIC = {2}".format(likelihood, BIC, AIC)
+    print("Model likelihood = {0}, BIC = {1}, AIC = {2}".format(likelihood, BIC, AIC))
 
     return likelihood, BIC, AIC
 
@@ -251,7 +248,7 @@ def load_data(data_file, exclude_subjects=None, exclude_runs=None, additional_in
         if not isinstance(exclude_subjects, list):
             exclude_subjects = [exclude_subjects]
         data = data[~data.Subject.isin(exclude_subjects)]
-        print "Excluded subjects: {0}".format(exclude_subjects)
+        print("Excluded subjects: {0}".format(exclude_subjects))
 
     subjects = np.unique(data.Subject)
     n_subjects = len(subjects)
@@ -263,7 +260,7 @@ def load_data(data_file, exclude_subjects=None, exclude_runs=None, additional_in
             if not isinstance(exclude_runs, list):
                 exclude_runs = [exclude_runs]
             data = data[~data.Run.isin(exclude_runs)]
-            print "Excluded runs: {0}".format(exclude_runs)
+            print("Excluded runs: {0}".format(exclude_runs))
 
     else:
         n_runs = 1
@@ -283,10 +280,10 @@ def load_data(data_file, exclude_subjects=None, exclude_runs=None, additional_in
         sims = None
 
     if n_subjects > 1:
-        print "Loading multi-subject data with {0} subjects, {1} runs per subject".format(n_subjects,
-                                                                                          n_runs)
+        print("Loading multi-subject data with {0} subjects, {1} runs per subject".format(n_subjects,
+                                                                                          n_runs))
     else:
-        print "Loading single subject data"
+        print("Loading single subject data")
 
     try:
         trial_index = np.tile(range(0, n_trials), n_runs * n_subjects)
@@ -323,7 +320,7 @@ def load_data(data_file, exclude_subjects=None, exclude_runs=None, additional_in
                 input_data = np.array(input_data).T
                 additional_input_data.append(input_data)
 
-    print "Loaded data, {0} subjects with {1} trials * {2} runs".format(n_subjects, n_trials, n_runs)
+    print("Loaded data, {0} subjects with {1} trials * {2} runs".format(n_subjects, n_trials, n_runs))
 
     return subjects, n_runs, responses, sims, outcomes, additional_input_data
 
@@ -510,7 +507,7 @@ def model_check(model_function, parameters):
 
     for arg in args:
         try:
-            print arg, parameters[arg]
+            print(arg, parameters[arg])
             def_string = '{0}={1}'.format(arg, parameters[arg])
             lines.insert(0, def_string)
         except KeyError:
@@ -521,8 +518,8 @@ def model_check(model_function, parameters):
     lines.insert(0, 'import theano.tensor as T')
 
     for line in lines:
-        print "Running code:\n" \
-              "{0}".format(line)
+        print("Running code:\n" \
+              "{0}".format(line))
         vars = re.search('.*?(?=[\+\-\*\/\=])', line)
         try:
             exec(line, {'os': '', 'shutil': '', 'sys': ''}, globals())  # evaluate code, making sure user can't do anything stupid
@@ -531,21 +528,21 @@ def model_check(model_function, parameters):
                              "e.g. 'np.inf' instead of np.inf")
         if vars:
             with stdoutIO() as s:
-                exec("print {0}".format(vars.group()))
+                exec("print({0})".format(vars.group()))
             out = s.getvalue().replace('\n', '')
             if not re.match('.+[}a-zA-Z]\.0', out):  # output is a tensor, need to eval
-                print "{0}\n".format(out)
+                print("{0}\n".format(out))
             else:
-                exec('print {0}.eval()\nprint " "'.format(vars.group()))
+                exec('print({0}.eval())\nprint(" ")'.format(vars.group()))
 
-    print "RETURNS"
+    print("RETURNS")
 
     for i in returns:
-        print i
+        print(i)
         try:
-            exec('print {0}.eval()'.format(i))
+            exec('print({0}).eval()'.format(i))
         except:
-            exec ('print {0}'.format(i))
+            exec ('print({0})'.format(i))
 
 
 def r2_individual(true, predicted):
@@ -573,12 +570,12 @@ def log_likelihood_individual(true, predicted):
      np.log(1 - predicted[(1 - true).nonzero()]).sum(axis=0))
 
 
-def load_example_outcomes():
-
-    file = urllib2.urlopen(
-        'https://raw.githubusercontent.com/tobywise/DMpy/master/docs/notebooks/examples/example_outcomes.txt')
-
-    return np.loadtxt(file)
+# def load_example_outcomes():
+#
+#     file = urllib2.urlopen(
+#         'https://raw.githubusercontent.com/tobywise/DMpy/master/docs/notebooks/examples/example_outcomes.txt')
+#
+#     return np.loadtxt(file)
 
 
 def beta_response_transform(responses):
@@ -795,5 +792,4 @@ def parameter_check(parameters, sim=False):
                 raise TypeError(
                     "Parameter {0} is not the correct type. Parameter values should be provided as a DMPy "
                     "Parameter instance, provided type was {1}".format(p, type(p)))
-
 
