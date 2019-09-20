@@ -208,7 +208,7 @@ def parameter_table(df_summary, subjects, logp_rvs):
     df_summary = df_summary[~df_summary['index'].isin(logp_rvs)]
 
     n_subjects = len(subjects)
-    n_parameters = len(df_summary) / n_subjects
+    n_parameters = int(len(df_summary) / n_subjects)
     subject_column = pd.Series(np.tile(subjects, n_parameters))
     df_summary['Subject'] = subject_column.values
     if len(subjects) > 1:
@@ -269,7 +269,7 @@ def load_data(data_file, exclude_subjects=None, exclude_runs=None, additional_in
     if len(data) % n_subjects:
         raise AttributeError("Unequal number of trials across subjects")
 
-    n_trials = len(data) / (n_runs * n_subjects)
+    n_trials = int(len(data) / (n_runs * n_subjects))
 
     sim_columns = [i for i in data.columns if '_sim' in i or 'Subject' in i]
     if len(sim_columns) > 1:

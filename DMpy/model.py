@@ -313,7 +313,7 @@ class _PyMCModel(Continuous):
 
         model_output = self.get_value(x)
 
-        for arg, val in self.logp_args.iteritems():
+        for arg, val in self.logp_args.items():
             if isinstance(val, str):
 
                 if val not in self.__learning_return_names and val not in self.__observation_return_names:
@@ -834,7 +834,7 @@ class DMModel():
         if not isinstance(logp_functions, dict):
             raise TypeError("Logp functions should be provided as a dictionary of the form {'name': (function, additional args)}")
 
-        for k, v in logp_functions.iteritems():
+        for k, v in logp_functions.items():
             if len(v) != 2:
                 raise ValueError("Wrong number of values provided for logp function {0}, provided {1} values but 2 should"
                                  "be provided: the logp function and a list of additional arguments".format(k, len(v)))
@@ -879,7 +879,7 @@ class DMModel():
 
         logp_results = dict()
 
-        for k, v in logp_functions.iteritems():
+        for k, v in logp_functions.items():
             logp_results[k] = []
             for n, (t, p) in enumerate(zip(true.T, predicted.T)):
                 result = v[0](t, p, *v[1])
@@ -1043,23 +1043,23 @@ class DMModel():
         # Create parameter combinations
 
         # First convert any single values to lists
-        for p, v in self.sim_learning_parameters.iteritems():
+        for p, v in self.sim_learning_parameters.items():
             if not hasattr(v, '__len__'):
                 self.sim_learning_parameters[p] = [v]
 
-        for p, v in self.sim_observation_parameters.iteritems():
+        for p, v in self.sim_observation_parameters.items():
             if not hasattr(v, '__len__'):
                 self.sim_observation_parameters[p] = [v]
 
         # combine learning and observation parameters into a single list - necessary for creating combinations/pairs
-        self.__parameter_values = self.sim_learning_parameters.values() + self.sim_observation_parameters.values()
+        self.__parameter_values = list(self.sim_learning_parameters.values()) + list(self.sim_observation_parameters.values())
 
         # Get combinations
         p_combinations, n_subjects = self._create_parameter_combinations(combinations, self.__parameter_values, n_runs,
                                                                          n_subjects, params_from_fit)
 
         # put combinations of parameters back into dictionaries
-        for n, p in enumerate(self.sim_learning_parameters.keys() + self.sim_observation_parameters.keys()):
+        for n, p in enumerate(list(self.sim_learning_parameters.keys()) + list(self.sim_observation_parameters.keys())):
             if p in self.sim_learning_parameters.keys():
                 self.sim_learning_parameters[p] = p_combinations[:, n]
             else:
@@ -1077,7 +1077,7 @@ class DMModel():
 
         for n, i in enumerate(self.learning_parameters):
             match = False
-            for p, v in self.sim_learning_parameters.iteritems():
+            for p, v in self.sim_learning_parameters.items():
                 if p == i.name:
                     if i.dynamic:
                         sim_dynamic.append(np.float64(v))
@@ -1090,7 +1090,7 @@ class DMModel():
         if self.observation_model is not None:
             for i in self.observation_parameters:
                 match = False
-                for p, v in self.sim_observation_parameters.iteritems():
+                for p, v in self.sim_observation_parameters.items():
                     if i.name == p:
                         sim_observation.append(v)
                         match = True
@@ -1132,7 +1132,7 @@ class DMModel():
             self._define_simulate_function(outputs_info, sim_static, model_inputs, sim_observation)
 
         # Call the function
-        sim_data = self._simulate_function(outcomes, time, *(model_inputs + sim_static +
+        sim_data = self._simulate_function(outcomes, time, *(model_inputs + [[i] for i in sim_static] +
                                                              [i for i in outputs_info if i is not None] +
                                                              sim_observation))
 
