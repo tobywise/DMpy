@@ -1132,7 +1132,7 @@ class DMModel():
             self._define_simulate_function(outputs_info, sim_static, model_inputs, sim_observation)
 
         # Call the function
-        sim_data = self._simulate_function(outcomes, time, *(model_inputs + [[i] for i in sim_static] +
+        sim_data = self._simulate_function(outcomes, time, *(model_inputs + [i for i in sim_static] +
                                                              [i for i in outputs_info if i is not None] +
                                                              sim_observation))
 
