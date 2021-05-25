@@ -155,13 +155,18 @@ def bic_regression(variables, n_subjects, outcomes, likelihood, individual=False
 
     if not individual:
         n = np.prod(outcomes.shape.eval())
+        #KB: produces error - negative product in log expression
+        # BIC = n + n * np.log(2 * np.pi) + n * \
+        #       np.log((-likelihood.astype(np.float)) / n) + np.log(n) * (len(variables) * n_subjects)
         BIC = n + n * np.log(2 * np.pi) + n * \
-              np.log((-likelihood.astype(np.float)) / n) + np.log(n) * (len(variables) * n_subjects)
+              np.log((likelihood.astype(np.float)) / n) + np.log(n) * (len(variables) * n_subjects)
 
     else:
         n = outcomes.shape[0]
+        # BIC = n + n * np.log(2 * np.pi) + n * \
+        #       np.log((-likelihood.astype(np.float)) / n) + np.log(n) * (len(variables) * n_subjects)
         BIC = n + n * np.log(2 * np.pi) + n * \
-              np.log(-likelihood.astype(np.float) / n) + np.log(n) * len(variables)
+              np.log((likelihood.astype(np.float)) / n) + np.log(n) * (len(variables) * n_subjects)
 
     return BIC
 
@@ -182,9 +187,16 @@ def model_fit(logp, fit_values, variables, outcome, n_subjects):
 
     variable_names = [i.name for i in variables]
 
+    #KB: error - can't alter dictionary during iteration, attempt to alter after iteration
+    # for k in fit_values.keys():
+    #     if k not in variable_names:
+    #         fit_values.pop(k)
+    k_pop = []
     for k in fit_values.keys():
         if k not in variable_names:
-            fit_values.pop(k)
+            k_pop.append(k)
+    for k in k_pop:
+        fit_values.pop(k)
 
     likelihood = logp(fit_values)
 
@@ -202,7 +214,9 @@ def parameter_table(df_summary, subjects, logp_rvs):
     Attempts to turn the pymc3 output into a nice table of parameter values for each subject
     """
     df_summary = df_summary[df_summary.index != 'eeee']
-    df_summary = df_summary[['mean', 'sd', 'mc_error', 'hpd_2.5', 'hpd_97.5']]
+    #KB: error - 'mc_error' 'hpd_2.5' 'hpd_97.5' not in table
+    #df_summary = df_summary[['mean', 'sd', 'mc_error', 'hpd_2.5', 'hpd_97.5']]
+    df_summary = df_summary[['mean', 'sd', 'mcse_mean', 'hdi_3%', 'hdi_97%']]
     df_summary = df_summary.reset_index()
     df_summary = df_summary[~df_summary['index'].str.contains('group')]
     df_summary = df_summary[~df_summary['index'].isin(logp_rvs)]
@@ -212,7 +226,10 @@ def parameter_table(df_summary, subjects, logp_rvs):
     subject_column = pd.Series(np.tile(subjects, n_parameters))
     df_summary['Subject'] = subject_column.values
     if len(subjects) > 1:
-        df_summary['index'] = pd.Series([re.search('.+(?=__)', i).group() for i in df_summary['index']]).values
+        #KB: error - re didn't match, changed to find 'alpha_n' from 'alpha_n[XX]'
+        #df_summary['index'] = pd.Series([re.search('.+(?=__)', i).group() for i in df_summary['index']]).values
+        df_summary['index'] = pd.Series([re.search('.+(?=\[)', i).group() for i in df_summary['index']]).values
+
 
     df_summary = df_summary.pivot(index='Subject', columns='index')
     df_summary.columns = df_summary.columns.map('_'.join)
@@ -253,7 +270,9 @@ def load_data(data_file, exclude_subjects=None, exclude_runs=None, additional_in
     subjects = np.unique(data.Subject)
     n_subjects = len(subjects)
 
-    if 'Run' in data.columns and np.max(data['Run']) > 0:
+    #KB: data['Run'] is not a number
+    #if 'Run' in data.columns and np.max(data['Run']) > 0:
+    if 'Run' in data.columns and len(np.unique(data['Run'])) > 0:
         n_runs = len(np.unique(data['Run']))
 
         if exclude_runs is not None:
@@ -792,4 +811,3 @@ def parameter_check(parameters, sim=False):
                 raise TypeError(
                     "Parameter {0} is not the correct type. Parameter values should be provided as a DMPy "
                     "Parameter instance, provided type was {1}".format(p, type(p)))
-
