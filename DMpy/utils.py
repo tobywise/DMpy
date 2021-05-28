@@ -156,17 +156,17 @@ def bic_regression(variables, n_subjects, outcomes, likelihood, individual=False
     if not individual:
         n = np.prod(outcomes.shape.eval())
         #KB: produces error - negative product in log expression
-        # BIC = n + n * np.log(2 * np.pi) + n * \
-        #       np.log((-likelihood.astype(np.float)) / n) + np.log(n) * (len(variables) * n_subjects)
+        #BIC = n + n * np.log(2 * np.pi) + n * \
+        #      np.log((-likelihood.astype(np.float)) / n) + np.log(n) * (len(variables) * n_subjects)
         BIC = n + n * np.log(2 * np.pi) + n * \
-              np.log((likelihood.astype(np.float)) / n) + np.log(n) * (len(variables) * n_subjects)
+              np.log(abs(likelihood.astype(np.float)) / n) + np.log(n) * (len(variables) * n_subjects)
 
     else:
         n = outcomes.shape[0]
         # BIC = n + n * np.log(2 * np.pi) + n * \
         #       np.log((-likelihood.astype(np.float)) / n) + np.log(n) * (len(variables) * n_subjects)
         BIC = n + n * np.log(2 * np.pi) + n * \
-              np.log((likelihood.astype(np.float)) / n) + np.log(n) * (len(variables) * n_subjects)
+              np.log(abs(likelihood.astype(np.float)) / n) + np.log(n) * (len(variables) * n_subjects)
 
     return BIC
 
