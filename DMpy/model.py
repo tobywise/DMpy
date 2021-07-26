@@ -1223,6 +1223,7 @@ class DMModel():
             p_combinations = np.tile(p_combinations, (n_subjects, 1))
 
         else:  # get pairs of parameters
+            params_from_fit = True #KB: attempting to get rid of squaring parameter combinations
             p_combinations = []
             if not all(len(i) == len(parameter_values[0]) for i in parameter_values):
                 raise ValueError("Each parameter should have the same number of values")
@@ -1321,6 +1322,7 @@ class DMModel():
         #              and not 'Subject' in i and not '_sim' in i]
         fit_params = [i for i in self.parameter_table.columns if not 'sd_' in i and not 'mcse' in i and not 'hdi' in i
                       and not 'Subject' in i and not '_sim' in i]
+
         if not self._recovery_run:
             # Groupby used because runs are repeated
             self.parameter_table = pd.merge(self.parameter_table, self.sims.groupby('Subject').mean().reset_index(),
@@ -1445,8 +1447,6 @@ class DMModel():
         else:
             se_cor = None
             warnings.warn('Only one parameter value provided, cannot perform recovery correlation tests')
-
-
 
         return se_cor  # TODO add ee cor
 
