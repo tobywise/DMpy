@@ -707,8 +707,7 @@ class DMModel():
         if plot:
             traceplot(self.trace)
 
-        #KB: varnames not recognised as valid argument for summary function
-        #self.fit_values = pm.summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
+        #varnames not recognised as valid argument for summary function
         self.fit_values = pm.summary(self.trace)['mean'].to_dict()
 
         self.parameter_table = parameter_table(pm.summary(self.trace), self.subjects, self._DMpy_model.distribution.logp_vars)
@@ -1105,7 +1104,6 @@ class DMModel():
                                                                                                     p_combinations.shape[0]), Warning)
             try:
                 # Try to repeat the outcomes we have
-                #KB: added conversion to int
                 outcomes = np.tile(outcomes, (1, int(p_combinations.shape[0] / outcomes.shape[1])))
                 for n in range(len(model_inputs)):
                     model_inputs[n] = np.tile(model_inputs[n], (1, int(p_combinations.shape[0] / model_inputs[n].shape[1])))
@@ -1223,7 +1221,7 @@ class DMModel():
             p_combinations = np.tile(p_combinations, (n_subjects, 1))
 
         else:  # get pairs of parameters
-            params_from_fit = True #KB: attempting to get rid of squaring parameter combinations
+            params_from_fit = True #avoid squaring of parameter combinations
             p_combinations = []
             if not all(len(i) == len(parameter_values[0]) for i in parameter_values):
                 raise ValueError("Each parameter should have the same number of values")
@@ -1317,9 +1315,8 @@ class DMModel():
 
         sns.set_palette("deep")
         self.sims = self.sims.reset_index(drop=True)
-        #KB - changed to match updated parameter table column names
-        #fit_params = [i for i in self.parameter_table.columns if not 'sd_' in i and not 'mc_error' in i and not 'hpd' in i
-        #              and not 'Subject' in i and not '_sim' in i]
+
+        # Changed to match updated parameter table column names
         fit_params = [i for i in self.parameter_table.columns if not 'sd_' in i and not 'mcse' in i and not 'hdi' in i
                       and not 'Subject' in i and not '_sim' in i]
 
@@ -1344,8 +1341,6 @@ class DMModel():
             regplot_scatter = True
 
         # SCATTER PLOTS - CORRELATIONS
-        #KB: attempting to resize figure
-        #f, axarr = plt.subplots(1, n_p_free, figsize=(2.5 * n_p_free, 3))
         f, axarr = plt.subplots(1, n_p_free, figsize=(4.8 * n_p_free, 4))
         for n, p in enumerate(fit_params):  # this code could all be made far more efficient
             if p.replace('mean_', '') + '_sim' not in self.sims.columns:
@@ -1362,7 +1357,6 @@ class DMModel():
 
             if self._fit_method in ['variational', 'Variational', 'mcmc', 'MCMC']:
                 # marker size proportional to SD if using variational or MCMC
-                # KB: make x and y keyword arguments passed to regplot to avoid FutureWarning
                 sns.regplot(x=self.parameter_table[p.replace('mean_', '') + '_sim'], y=self.parameter_table[p], ax=ax,
                             scatter_kws={'s': self.parameter_table[p.replace('mean_', 'sd_')] * 500, 'alpha': alpha},
                             scatter=regplot_scatter)
@@ -1402,7 +1396,6 @@ class DMModel():
             f.suptitle("Simulated-estimated parameter correlations")
         else:
             f.suptitle("Simulated-estimated parameter correlations, coloured by {0}".format(by))
-        #KB: added plt.show()
         plt.tight_layout()
         plt.subplots_adjust(top=0.8)
         plt.show()
@@ -1416,8 +1409,6 @@ class DMModel():
                 se_cor = None
             else:
                 se_cor = np.corrcoef(parameter_values, parameter_values_sim)[n_p_free:, :n_p_free]
-                #KB: attempting to resize figure
-                #fig, ax = plt.subplots(figsize=(n_p_free * 1.2, n_p_free * 1))
                 fig, ax = plt.subplots(figsize=(n_p_free * 4.8, n_p_free * 4))
                 cmap = sns.diverging_palette(220, 10, as_cmap=True)
                 sns.heatmap(se_cor, cmap=cmap, square=True, linewidths=.5, xticklabels=fit_params,
@@ -1426,14 +1417,10 @@ class DMModel():
                 ax.set_ylabel('Estimated', fontweight=fontweight)
                 ax.set_title("Simulated-Posterior correlations", fontweight=fontweight)
 
-                #KB: deactivating tight_layout for now, adding plt.show()
-                #plt.tight_layout()
                 plt.show()
 
             ## POSTERIOR CORRELATIONS
             ee_cor = np.corrcoef(parameter_values, parameter_values)[n_p_free:, :n_p_free]
-            #KB: attempting to resize figure
-            #fig, ax = plt.subplots(figsize=(n_p_free * 1.2, n_p_free * 1))
             fig, ax = plt.subplots(figsize=(n_p_free * 4.8, n_p_free * 4))
             cmap = sns.diverging_palette(220, 10, as_cmap=True)
             sns.heatmap(ee_cor, cmap=cmap, square=True, linewidths=.5, xticklabels=fit_params,
@@ -1441,8 +1428,6 @@ class DMModel():
             ax.set_xlabel('Estimated', fontweight=fontweight)
             ax.set_ylabel('Estimated', fontweight=fontweight)
             ax.set_title("Posterior correlations", fontweight=fontweight)
-            #KB: deactivating tight_layout for now, adding plt.show()
-            #plt.tight_layout()
             plt.show()
         else:
             se_cor = None
