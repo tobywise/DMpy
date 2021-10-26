@@ -707,7 +707,8 @@ class DMModel():
         if plot:
             traceplot(self.trace)
 
-        self.fit_values = pm.summary(self.trace, varnames=self.trace.varnames)['mean'].to_dict()
+        #varnames not recognised as valid argument for summary function
+        self.fit_values = pm.summary(self.trace)['mean'].to_dict()
 
         self.parameter_table = parameter_table(pm.summary(self.trace), self.subjects, self._DMpy_model.distribution.logp_vars)
 
@@ -951,7 +952,6 @@ class DMModel():
             Tuple: (simulated results, output path), where simulated results is an instance of the SimulatedResults class
 
         """
-
         self._recovery_run = False
 
         n_runs = 1
@@ -1064,7 +1064,6 @@ class DMModel():
                 self.sim_learning_parameters[p] = p_combinations[:, n]
             else:
                 self.sim_observation_parameters[p] = p_combinations[:, n]
-
         # each parameter now has a list of values
 
         # Set up parameters
@@ -1101,13 +1100,13 @@ class DMModel():
         # Ensure outcomes and additional model inputs are the right format
         if outcomes.shape[1] < p_combinations.shape[0]:
             warnings.warn("Fewer outcome lists than simulated subjects, attempting to use same outcomes for each "
-                          "subject (number of outcome lists = {0}, number of subjects = {1}".format(outcomes.shape[0],
+                          "subject (number of outcome lists = {0}, number of subjects = {1}".format(outcomes.shape[1],
                                                                                                     p_combinations.shape[0]), Warning)
             try:
                 # Try to repeat the outcomes we have
-                outcomes = np.tile(outcomes, (1, p_combinations.shape[0] / outcomes.shape[1]))
+                outcomes = np.tile(outcomes, (1, int(p_combinations.shape[0] / outcomes.shape[1])))
                 for n in range(len(model_inputs)):
-                    model_inputs[n] = np.tile(model_inputs[n], (1, p_combinations.shape[0] / model_inputs[n].shape[1]))
+                    model_inputs[n] = np.tile(model_inputs[n], (1, int(p_combinations.shape[0] / model_inputs[n].shape[1])))
             except:
                 raise ValueError("Unable to repeat outcome arrays to match number of subjects, make sure to either "
                                  "provide outcomes for each subject in a dataframe or make sure the number of "
@@ -1222,6 +1221,7 @@ class DMModel():
             p_combinations = np.tile(p_combinations, (n_subjects, 1))
 
         else:  # get pairs of parameters
+            params_from_fit = True #avoid squaring of parameter combinations
             p_combinations = []
             if not all(len(i) == len(parameter_values[0]) for i in parameter_values):
                 raise ValueError("Each parameter should have the same number of values")
@@ -1315,8 +1315,11 @@ class DMModel():
 
         sns.set_palette("deep")
         self.sims = self.sims.reset_index(drop=True)
-        fit_params = [i for i in self.parameter_table.columns if not 'sd_' in i and not 'mc_error' in i and not 'hpd' in i
+
+        # Changed to match updated parameter table column names
+        fit_params = [i for i in self.parameter_table.columns if not 'sd_' in i and not 'mcse' in i and not 'hdi' in i
                       and not 'Subject' in i and not '_sim' in i]
+
         if not self._recovery_run:
             # Groupby used because runs are repeated
             self.parameter_table = pd.merge(self.parameter_table, self.sims.groupby('Subject').mean().reset_index(),
@@ -1338,7 +1341,7 @@ class DMModel():
             regplot_scatter = True
 
         # SCATTER PLOTS - CORRELATIONS
-        f, axarr = plt.subplots(1, n_p_free, figsize=(2.5 * n_p_free, 3))
+        f, axarr = plt.subplots(1, n_p_free, figsize=(4.8 * n_p_free, 4))
         for n, p in enumerate(fit_params):  # this code could all be made far more efficient
             if p.replace('mean_', '') + '_sim' not in self.sims.columns:
                 raise ValueError("Simulated values for parameter {0} not found in response file".format(p))
@@ -1354,7 +1357,7 @@ class DMModel():
 
             if self._fit_method in ['variational', 'Variational', 'mcmc', 'MCMC']:
                 # marker size proportional to SD if using variational or MCMC
-                sns.regplot(self.parameter_table[p.replace('mean_', '') + '_sim'], self.parameter_table[p], ax=ax,
+                sns.regplot(x=self.parameter_table[p.replace('mean_', '') + '_sim'], y=self.parameter_table[p], ax=ax,
                             scatter_kws={'s': self.parameter_table[p.replace('mean_', 'sd_')] * 500, 'alpha': alpha},
                             scatter=regplot_scatter)
                 if by:
@@ -1364,7 +1367,7 @@ class DMModel():
                     f.colorbar(points, ax=ax)
             else:
 
-                sns.regplot(self.parameter_table[p.replace('mean_', '') + '_sim'], self.parameter_table[p], ax=ax,
+                sns.regplot(x=self.parameter_table[p.replace('mean_', '') + '_sim'], y=self.parameter_table[p], ax=ax,
                             scatter=regplot_scatter, scatter_kws={'alpha': alpha})
                 if by:
                     points = ax.scatter(self.parameter_table[p.replace('mean_', '') + '_sim'], self.parameter_table[p], alpha=0.3,
@@ -1395,6 +1398,7 @@ class DMModel():
             f.suptitle("Simulated-estimated parameter correlations, coloured by {0}".format(by))
         plt.tight_layout()
         plt.subplots_adjust(top=0.8)
+        plt.show()
 
         ## SIMULATED-POSTERIOR CORRELATIONS
         if len(self.parameter_table) > 1 and correlations:
@@ -1405,7 +1409,7 @@ class DMModel():
                 se_cor = None
             else:
                 se_cor = np.corrcoef(parameter_values, parameter_values_sim)[n_p_free:, :n_p_free]
-                fig, ax = plt.subplots(figsize=(n_p_free * 1.2, n_p_free * 1))
+                fig, ax = plt.subplots(figsize=(n_p_free * 4.8, n_p_free * 4))
                 cmap = sns.diverging_palette(220, 10, as_cmap=True)
                 sns.heatmap(se_cor, cmap=cmap, square=True, linewidths=.5, xticklabels=fit_params,
                             yticklabels=fit_params, annot=True)  # order might not work here
@@ -1413,23 +1417,21 @@ class DMModel():
                 ax.set_ylabel('Estimated', fontweight=fontweight)
                 ax.set_title("Simulated-Posterior correlations", fontweight=fontweight)
 
-                plt.tight_layout()
+                plt.show()
 
             ## POSTERIOR CORRELATIONS
             ee_cor = np.corrcoef(parameter_values, parameter_values)[n_p_free:, :n_p_free]
-            fig, ax = plt.subplots(figsize=(n_p_free * 1.2, n_p_free * 1))
+            fig, ax = plt.subplots(figsize=(n_p_free * 4.8, n_p_free * 4))
             cmap = sns.diverging_palette(220, 10, as_cmap=True)
             sns.heatmap(ee_cor, cmap=cmap, square=True, linewidths=.5, xticklabels=fit_params,
                         yticklabels=fit_params, annot=True)  # order might not work here
             ax.set_xlabel('Estimated', fontweight=fontweight)
             ax.set_ylabel('Estimated', fontweight=fontweight)
             ax.set_title("Posterior correlations", fontweight=fontweight)
-            plt.tight_layout()
+            plt.show()
         else:
             se_cor = None
             warnings.warn('Only one parameter value provided, cannot perform recovery correlation tests')
-
-
 
         return se_cor  # TODO add ee cor
 
