@@ -851,19 +851,19 @@ class DMModel():
 
         sim_results, _ = self.simulate()
 
-        if 'P' in sim_results['sim_results'].keys():
-            predicted = np.vstack(sim_results['sim_results']['P'])
+        if 'prob' in sim_results.results.keys():
+            predicted = np.vstack(sim_results.results['prob'])
         else:
-            predicted = np.vstack(sim_results['sim_results']['value'])
+            predicted = np.vstack(sim_results.results['value'])
 
         if len(predicted.shape) == 1:
             predicted.reshape((predicted.shape, 1))
 
         n_runs = self.n_runs.eval()
-        predicted = predicted.reshape(n_runs * predicted.shape[0], predicted.shape[1] / n_runs, order='F')
+        predicted = predicted.reshape(n_runs * predicted.shape[0], int(predicted.shape[1] / n_runs), order='F')
 
         true = self.responses.eval().T
-        true = true.reshape(n_runs * true.shape[0], true.shape[1] / n_runs, order='F')
+        true = true.reshape(n_runs * true.shape[0], int(true.shape[1] / n_runs), order='F')
 
         # TODO REDO ALL THIS
         if self.logp_function == 'r2':
@@ -871,6 +871,9 @@ class DMModel():
             data_type = 'continuous'
         elif self.logp_function == 'll':
             logp_functions['logp'] = (log_likelihood, [])
+            data_type = 'discrete'
+        elif self.logp_function == 'bernoulli':
+            logp_functions['logp'] = (bernoulli_likelihood, [])
             data_type = 'discrete'
         else:
             logp_functions['logp'] = (self.logp_function, self.logp_args)
@@ -882,15 +885,15 @@ class DMModel():
 
         for k, v in logp_functions.items():
             logp_results[k] = []
-            for n, (t, p) in enumerate(zip(true.T, predicted.T)):
-                result = v[0](t, p, *v[1])
+            for n, (t, p) in enumerate(zip(true.T, predicted.T.reshape(true.T.shape))):
+                result = v[0](p).logp(t)
                 if getattr(result, 'eval', None):
                     result = result.eval()  # deal with tensor results
                 logp_results[k].append(result)
             logp_results[k] = np.array(logp_results[k])
 
         o = self.outcomes.eval()
-        o = true.reshape(n_runs * o.shape[0], o.shape[1] / n_runs)
+        o = true.reshape(n_runs * o.shape[0], int(o.shape[1] / n_runs))
 
         if self.logp_function == 'r2' or data_type == 'continous':
             self.BIC_individual = bic_regression(self._pymc3_model.vars, 1, o, -logp_results['rss'], individual=True)
@@ -901,9 +904,9 @@ class DMModel():
             self.AIC_individual = aic(self._pymc3_model.vars, 1, logp_results['logp'])
 
 
-        fit_table = dict(subject=self.subjects, BIC=self.BIC_individual, AIC=self.AIC_individual)
+        fit_table = dict(subject=self.subjects.repeat(o.shape[0]), BIC=np.hstack(self.BIC_individual), AIC=np.hstack(self.AIC_individual))
         for k in logp_results.keys():
-            fit_table[k] = logp_results[k]
+            fit_table[k] = np.hstack(logp_results[k])
 
         fit_table = pd.DataFrame(fit_table)
 
@@ -913,6 +916,7 @@ class DMModel():
         # print(self.model_fit_individual
 
         return self.model_fit_individual
+
 
 
     def tracePlot(self):

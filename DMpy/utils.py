@@ -193,7 +193,7 @@ def model_fit(logp, fit_values, variables, outcome, n_subjects):
     likelihood = logp(fit_values)
 
     BIC = bic_regression(variables, n_subjects, outcome, likelihood)
-    AIC = aic(variables, n_subjects, likelihood)
+    AIC = aic(variables, np.size(outcome.eval()), likelihood)
 
     print("Model likelihood = {0}, BIC = {1}, AIC = {2}".format(likelihood, BIC, AIC))
 
