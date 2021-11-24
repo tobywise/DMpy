@@ -815,7 +815,7 @@ class DMModel():
             raise AttributeError("Model has not been fit")
 
 
-    def individual_fits(self, logp_functions=None, data_type='discrete'):
+    def individual_fits(self, logp_functions=None, data_type='discrete', response_variable='prob'):
 
         """
         Provides model fits for individual subjects. By default this will use the logp function provided for model fitting, but additional functions can be provided for comparison. For example, if fitting using R^2 as the logp function, it may be useful to also check the mean squared error of the fit.
@@ -823,6 +823,7 @@ class DMModel():
         Args:
             logp_functions: A dictionary of logp functions to use in addition to the one used for model fitting, with the form {'name': (logp_function, additional_arguments)), where 'name' is the name of the logp function (this is simply used to identify the results of the function in the output, logp_function is a predefined logp function, and additional_arguments is a list of additional argument values passed to the logp function. If the function does not take additional arguments, just pass an empty list as the second entry in the tuple.
             data_type: Type of data, either 'discrete' or 'continuous' - used for calculating the BIC correctly. If the logp method during fitting is set to either 'll' or 'r2' this will be set appropriately automatically.
+            response_variable: Variable used for model fit statistics
 
         Returns:
             A dataframe of model fit statistics. The logp function used in model fitting is referred to as "logp"
@@ -849,7 +850,7 @@ class DMModel():
         if data_type not in ['discrete', 'continuous']:
             raise ValueError("Data type should be either 'discrete' or 'continuous', {0} was provided".format(data_type))
 
-        sim_results, _ = self.simulate()
+        sim_results, _ = self.simulate(response_variable=response_variable)
 
         if 'prob' in sim_results.results.keys():
             predicted = np.vstack(sim_results.results['prob'])
@@ -875,11 +876,19 @@ class DMModel():
         elif self.logp_function == 'bernoulli':
             logp_functions['logp'] = (bernoulli_likelihood, [])
             data_type = 'discrete'
+        elif self.logp_function == 'beta':
+            def beta_likelihood_func(phi, mu):
+                phi = T.exp(phi)
+                return pm.Beta.dist(alpha=mu * phi, beta=(1-mu) * phi)
+            from functools import partial
+            beta_likelihood_func = partial(beta_likelihood_func, self.raw_fit_values['phi'])
+            logp_functions['logp'] = (beta_likelihood_func, [])
+            data_type = 'continuous'
         else:
             logp_functions['logp'] = (self.logp_function, self.logp_args)
 
-        if self.logp_function == 'r2' or data_type == 'continuous':
-            logp_functions['rss'] = (rss, [])
+        # if self.logp_function == 'r2' or data_type == 'continuous':
+        #     logp_functions['rss'] = (rss, [])
 
         logp_results = dict()
 
@@ -895,9 +904,10 @@ class DMModel():
         o = self.outcomes.eval()
         o = true.reshape(n_runs * o.shape[0], int(o.shape[1] / n_runs))
 
-        if self.logp_function == 'r2' or data_type == 'continous':
-            self.BIC_individual = bic_regression(self._pymc3_model.vars, 1, o, -logp_results['rss'], individual=True)
-            self.AIC_individual = bic_regression(self._pymc3_model.vars, 1, o, -logp_results['rss'], individual=True)  # TODO
+        if self.logp_function == 'r2' or data_type == 'continuous':
+
+            self.BIC_individual = bic_regression(self._pymc3_model.vars, 1, o, -logp_results['logp'], individual=True)
+            self.AIC_individual = bic_regression(self._pymc3_model.vars, 1, o, -logp_results['logp'], individual=True) 
 
         if self.logp_function == 'll' or data_type == 'discrete':
             self.BIC_individual = bic(self._pymc3_model.vars, 1, o, logp_results['logp'], individual=True)
