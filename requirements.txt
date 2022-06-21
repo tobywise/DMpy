@@ -1,6 +1,6 @@
 functools32==3.2.3.post2
 matplotlib==2.1.1
-numpy==1.13.3
+numpy==1.22.0
 pandas==0.21.1
 pymc3==3.2
 scipy==1.0.0
